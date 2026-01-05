@@ -11,32 +11,51 @@ from db import get_db
 from models import User, Subscription
 from auth_jwt import get_current_user
 
-import mercadopago
+# ✅ AJUSTE (NÃO APAGA NADA): import seguro para não derrubar o deploy no Railway
+# Se mercadopago não estiver instalado/carregar errado, a API sobe e só as rotas billing retornam erro claro.
+try:
+    import mercadopago
+except Exception as e:
+    mercadopago = None
+    print("❌ Falha ao importar mercadopago:", str(e))
 
 router = APIRouter(prefix="/api/billing", tags=["Billing"])
 
 # 🔐 Mercado Pago
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
+
+# ✅ AJUSTE (NÃO APAGA NADA): não derruba a API no import/startup.
+# Em produção no Railway, derrubar o app inteiro por env faltando é ruim: /api/health também cai.
+# Então mantemos as validações, mas aplicamos de forma “controlada” nas rotas.
+_MP_FATAL_ERROR = None
+
 if not MP_ACCESS_TOKEN:
-    raise RuntimeError("MP_ACCESS_TOKEN não configurado no .env")
+    _MP_FATAL_ERROR = "MP_ACCESS_TOKEN não configurado no .env/Variables"
+else:
+    # ✅ dica: token válido MP normalmente começa com "TEST-" ou "APP_USR-"
+    # Se estiver parecendo JWT (eyJ...), é quase certeza que você colou o token errado aqui.
+    if str(MP_ACCESS_TOKEN).strip().startswith("eyJ"):
+        _MP_FATAL_ERROR = (
+            "MP_ACCESS_TOKEN parece um JWT (eyJ...). "
+            "Use o Access Token do Mercado Pago (TEST-... ou APP_USR-...)."
+        )
 
-# ✅ dica: token válido MP normalmente começa com "TEST-" ou "APP_USR-"
-# Se estiver parecendo JWT (eyJ...), é quase certeza que você colou o token errado aqui.
-if str(MP_ACCESS_TOKEN).strip().startswith("eyJ"):
-    raise RuntimeError(
-        "MP_ACCESS_TOKEN parece um JWT (eyJ...). "
-        "Use o Access Token do Mercado Pago (TEST-... ou APP_USR-...)."
-    )
+    # ✅ PRODUÇÃO: garante que você não está rodando com TEST-
+    # (mantém compatível com sandbox, mas impede você de "achar" que é produção quando não é)
+    if str(MP_ACCESS_TOKEN).strip().startswith("TEST-"):
+        _MP_FATAL_ERROR = (
+            "Você está com MP_ACCESS_TOKEN de TESTE (TEST-...). "
+            "Para PRODUÇÃO use APP_USR-... em MP_ACCESS_TOKEN no .env/Variables."
+        )
 
-# ✅ PRODUÇÃO: garante que você não está rodando com TEST-
-# (mantém compatível com sandbox, mas impede você de "achar" que é produção quando não é)
-if str(MP_ACCESS_TOKEN).strip().startswith("TEST-"):
-    raise RuntimeError(
-        "Você está com MP_ACCESS_TOKEN de TESTE (TEST-...). "
-        "Para PRODUÇÃO use APP_USR-... em MP_ACCESS_TOKEN no .env."
-    )
-
-sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+# ✅ AJUSTE (NÃO APAGA NADA): só cria o SDK se estiver tudo ok e a lib importou.
+sdk = None
+if mercadopago and not _MP_FATAL_ERROR:
+    try:
+        sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+    except Exception as e:
+        _MP_FATAL_ERROR = f"Erro ao inicializar SDK Mercado Pago: {str(e)}"
+        sdk = None
 
 # ✅ Fallbacks seguros (evita None quebrar string)
 FRONTEND_URL = (os.getenv("FRONTEND_URL") or "http://localhost:5173").strip().rstrip("/")
@@ -49,6 +68,16 @@ MP_WEBHOOK_SECRET = (os.getenv("MP_WEBHOOK_SECRET") or "").strip()
 # ✅ garante URL absoluta (MP rejeita url sem http/https)
 if FRONTEND_URL and not (FRONTEND_URL.startswith("http://") or FRONTEND_URL.startswith("https://")):
     FRONTEND_URL = "http://" + FRONTEND_URL.lstrip("/")
+
+
+# ✅ AJUSTE (NOVO, SEM APAGAR NADA): helper para travar apenas billing quando MP estiver mal configurado
+def _ensure_mp_ready():
+    if mercadopago is None:
+        raise HTTPException(status_code=500, detail="SDK Mercado Pago (mercadopago) não está disponível no servidor.")
+    if _MP_FATAL_ERROR:
+        raise HTTPException(status_code=500, detail=_MP_FATAL_ERROR)
+    if sdk is None:
+        raise HTTPException(status_code=500, detail="SDK Mercado Pago não inicializado (sdk=None).")
 
 
 def _subscription_kwargs_safe(data: dict) -> dict:
@@ -234,6 +263,8 @@ def create_subscription(
       "price": 59.90
     }
     """
+    # ✅ AJUSTE: garante MP ok sem derrubar a API inteira
+    _ensure_mp_ready()
 
     plan = data.get("plan")
     price = data.get("price")
@@ -348,6 +379,8 @@ def create_user_subscription(
       "price": 9.90
     }
     """
+    # ✅ AJUSTE: garante MP ok sem derrubar a API inteira
+    _ensure_mp_ready()
 
     plan = (data.get("plan") or "").lower().strip()
     price = data.get("price")
@@ -448,6 +481,11 @@ async def mp_webhook(request: Request, db: Session = Depends(get_db)):
     - Converte payment_id para int de forma segura antes do sdk.payment().get
     """
     try:
+        # ✅ AJUSTE: webhook também não deve derrubar por MP mal configurado
+        # (mas aqui respondemos 200 pra não gerar retry infinito)
+        if mercadopago is None or _MP_FATAL_ERROR or sdk is None:
+            return JSONResponse({"status": "mp_not_ready", "detail": _MP_FATAL_ERROR or "sdk unavailable"}, status_code=200)
+
         # ✅ lê raw body (pra permitir validar assinatura e também parse robusto)
         raw_body = b""
         try:

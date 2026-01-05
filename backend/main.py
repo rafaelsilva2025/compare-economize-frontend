@@ -3,8 +3,10 @@ from dotenv import load_dotenv
 import os
 
 # ✅ força pegar backend/.env (independente da pasta que você rodar)
+# ✅ AJUSTE: no Railway pode não existir .env, então só carrega se o arquivo existir
 env_path = Path(__file__).resolve().parent / ".env"
-load_dotenv(env_path)
+if env_path.exists():
+    load_dotenv(env_path)
 
 from routes.dev_seed import router as dev_seed_router
 
@@ -37,15 +39,24 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+
+        # ✅ seu domínio (produção)
         "https://compareeconomize.com.br",
         "https://www.compareeconomize.com.br",
+
+        # ✅ NOVO: seu frontend na Vercel (produção)
+        "https://compare-economize-frontend.vercel.app",
+
         *extra_origins,  # ✅ NOVO
     ],
-    # ✅ NOVO: libera qualquer subdomínio do ngrok (útil em testes)
+    # ✅ AJUSTE (segurança): mantém ngrok liberado via regex,
+    # e NÃO libera qualquer *.vercel.app (só o seu domínio acima).
     # Obs: regex só funciona se o Origin bater (normalmente só em chamadas do browser)
     allow_origin_regex=r"^https:\/\/.*\.ngrok\-free\.dev$",
     allow_credentials=True,
     allow_methods=["*"],
+
+    # ✅ DICA: "*" funciona, mas manter explícito evita dor de cabeça com Authorization em alguns proxies
     allow_headers=["*"],
 )
 
