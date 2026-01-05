@@ -29,6 +29,20 @@ export default function Login() {
   // ✅ evita rodar duas vezes (React StrictMode pode chamar effects 2x em dev)
   const googleHandledRef = useRef(false);
 
+  // ✅ NOVO: debug do ambiente (ajuda MUITO no Vercel)
+  useEffect(() => {
+    try {
+      // não quebra build, só loga quando abrir a página
+      // eslint-disable-next-line no-console
+      console.log("ENV VITE_API_URL:", import.meta.env.VITE_API_URL);
+    } catch (e) {
+      // ignora
+    }
+  }, []);
+
+  // ✅ helper: normaliza tipo
+  const normalizeType = (t) => String(t || "").toLowerCase().trim();
+
   // ✅ 1) Se veio do Google com token na URL: salva e busca /me
   useEffect(() => {
     const run = async () => {
@@ -50,7 +64,7 @@ export default function Login() {
         toast.success("Login Google realizado!", { id: toastId });
 
         // ✅ remove token da URL para não repetir login ao atualizar
-        const type = String(me?.account_type || me?.type || accountType || "").toLowerCase();
+        const type = normalizeType(me?.account_type || me?.type || accountType || "");
 
         if (type === "business" || type === "empresa") {
           navigate("/DashboardEmpresa", { replace: true });
@@ -59,7 +73,12 @@ export default function Login() {
         }
       } catch (err) {
         console.error("GOOGLE_LOGIN_ERROR:", err);
-        toast.error("Não foi possível finalizar login com Google.", { id: toastId });
+
+        // ✅ NOVO: mostra mais info do erro
+        toast.error(
+          err?.message ? `Falha no Google login: ${err.message}` : "Não foi possível finalizar login com Google.",
+          { id: toastId }
+        );
 
         // ✅ fallback: limpa token ruim e volta pro login limpo
         localStorage.removeItem("token");
@@ -108,7 +127,7 @@ export default function Login() {
 
       toast.success(isSignup ? "Conta criada com sucesso!" : "Login realizado!", { id: toastId });
 
-      const type = String(me?.account_type || me?.type || accountType || "").toLowerCase();
+      const type = normalizeType(me?.account_type || me?.type || accountType || "");
       if (type === "business" || type === "empresa") {
         navigate("/DashboardEmpresa", { replace: true });
       } else {
@@ -116,7 +135,14 @@ export default function Login() {
       }
     } catch (err) {
       console.error("AUTH_ERROR:", err);
-      toast.error(isSignup ? "Erro ao criar conta. Verifique os dados." : "Não foi possível entrar.", { id: toastId });
+
+      // ✅ NOVO: erro mais claro (útil pra CORS/401)
+      toast.error(
+        err?.message
+          ? `Erro no login: ${err.message}`
+          : (isSignup ? "Erro ao criar conta. Verifique os dados." : "Não foi possível entrar."),
+        { id: toastId }
+      );
     } finally {
       setLoading(false);
     }

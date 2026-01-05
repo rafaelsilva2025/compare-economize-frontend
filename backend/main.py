@@ -26,37 +26,42 @@ from routes.auth import me_alias_router
 
 app = FastAPI(title="Compare Economize API", version="1.0.0")
 
-# ✅ CORS (inclui 5173 e 5174)
-# ✅ NOVO: permite também domínios ngrok (ex: https://xxxx.ngrok-free.dev)
+# ✅ CORS
 # ✅ NOVO: permite configurar origens extras via .env (EXTRA_CORS_ORIGINS)
 extra_origins_env = (os.getenv("EXTRA_CORS_ORIGINS") or "").strip()
 extra_origins = [o.strip() for o in extra_origins_env.split(",") if o.strip()] if extra_origins_env else []
 
+# ✅ opcional: se você definir FRONTEND_URL no .env/Railway, adiciona automaticamente
+frontend_url_env = (os.getenv("FRONTEND_URL") or "").strip()
+frontend_url_list = [frontend_url_env] if frontend_url_env else []
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        # Local
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
 
-        # ✅ seu domínio (produção)
-        "https://compareeconomize.com.br",
-        "https://www.compareeconomize.com.br",
+        # ✅ seu domínio (produção) — 3 "e"
+        "https://compareeeconomize.com.br",
+        "https://www.compareeeconomize.com.br",
 
-        # ✅ NOVO: seu frontend na Vercel (produção)
+        # ✅ se você usa o .com também (mesmo redirecionando)
+        "https://compareeeconomize.com",
+        "https://www.compareeeconomize.com",
+
+        # ✅ Vercel (produção)
         "https://compare-economize-frontend.vercel.app",
 
-        *extra_origins,  # ✅ NOVO
+        *frontend_url_list,  # ✅ pega FRONTEND_URL se você setar no env
+        *extra_origins,      # ✅ extras via env
     ],
-    # ✅ AJUSTE (segurança): mantém ngrok liberado via regex,
-    # e NÃO libera qualquer *.vercel.app (só o seu domínio acima).
-    # Obs: regex só funciona se o Origin bater (normalmente só em chamadas do browser)
+    # ✅ mantém ngrok liberado via regex
     allow_origin_regex=r"^https:\/\/.*\.ngrok\-free\.dev$",
     allow_credentials=True,
     allow_methods=["*"],
-
-    # ✅ DICA: "*" funciona, mas manter explícito evita dor de cabeça com Authorization em alguns proxies
     allow_headers=["*"],
 )
 
@@ -71,7 +76,7 @@ def health():
 # ROTAS DA APLICAÇÃO
 # ==========================
 # 🔥 IMPORTANTE:
-# - data_router provavelmente JÁ tem prefix="/api" lá dentro (por isso antes você via /api/products etc).
+# - data_router provavelmente JÁ tem prefix="/api" lá dentro
 # - então aqui NÃO colocamos prefix="/api", senão vira /api/api/...
 app.include_router(data_router)
 
