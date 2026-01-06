@@ -31,13 +31,46 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 FRONTEND_URL_DEFAULT = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
+# ✅ NOVO: força base pública do backend (RECOMENDADO em produção)
+# Ex: https://api.compareeeeconomize.com.br
+PUBLIC_BACKEND_URL = (os.getenv("PUBLIC_BACKEND_URL") or "").strip().rstrip("/")
+
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 
+# ✅ NOVO: detecta base externa correta atrás de proxy (Railway/Cloudflare/etc.)
+def _external_base_url(request: Request) -> str:
+    # 1) Se você definiu PUBLIC_BACKEND_URL, usa ela sempre (mais confiável)
+    if PUBLIC_BACKEND_URL:
+        return PUBLIC_BACKEND_URL
+
+    # 2) Caso contrário, tenta ler headers de proxy
+    xf_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    xf_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    xf_port = (request.headers.get("x-forwarded-port") or "").split(",")[0].strip()
+
+    # fallback
+    scheme = xf_proto or request.url.scheme or "http"
+    host = xf_host or request.url.hostname or request.headers.get("host") or "localhost"
+
+    # evita duplicar porta se o host já vier com :porta
+    if ":" in host:
+        base = f"{scheme}://{host}"
+        return base.rstrip("/")
+
+    # adiciona porta só se fizer sentido
+    if xf_port and xf_port not in ("80", "443"):
+        base = f"{scheme}://{host}:{xf_port}"
+    else:
+        base = f"{scheme}://{host}"
+
+    return base.rstrip("/")
+
+
 def _build_callback_url(request: Request) -> str:
-    base = str(request.base_url).rstrip("/")
+    base = _external_base_url(request).rstrip("/")
     return f"{base}/api/auth/google/callback"
 
 
@@ -183,12 +216,16 @@ async def google_login(request: Request, type: str = "user", redirectTo: str | N
     # ✅ mantém RedirectResponse
     resp = RedirectResponse(url=url, status_code=302)
 
+    # ✅ NOVO: secure cookie quando estiver em https (produção)
+    base = _external_base_url(request)
+    is_https = base.lower().startswith("https://")
+
     # ✅ FIX: cookies com valores codificados + path="/" (evita erro e perda de cookie)
     # Se esses cookies quebrarem, o navegador pode mostrar 0 B / request failed
     try:
-        resp.set_cookie("oauth_state", state, httponly=True, samesite="lax", path="/")
-        resp.set_cookie("oauth_type", (type or "user"), httponly=True, samesite="lax", path="/")
-        resp.set_cookie("oauth_redirect", _cookie_encode(frontend_redirect), httponly=True, samesite="lax", path="/")
+        resp.set_cookie("oauth_state", state, httponly=True, samesite="lax", path="/", secure=is_https)
+        resp.set_cookie("oauth_type", (type or "user"), httponly=True, samesite="lax", path="/", secure=is_https)
+        resp.set_cookie("oauth_redirect", _cookie_encode(frontend_redirect), httponly=True, samesite="lax", path="/", secure=is_https)
     except Exception as e:
         print("AUTH_GOOGLE_SET_COOKIE_ERROR:", repr(e))
         return JSONResponse({"error": "set_cookie_failed", "detail": repr(e)}, status_code=500)

@@ -13,6 +13,9 @@ from routes.dev_seed import router as dev_seed_router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# ✅ NOVO: ajuda o FastAPI a respeitar X-Forwarded-Proto/Host (Railway/Proxy)
+from starlette.middleware.base import BaseHTTPMiddleware
+
 from routes.business import router as business_router
 from routes.markets import router as markets_router
 from routes.stats import router as stats_router
@@ -25,6 +28,23 @@ from routes.auth import router as auth_router
 from routes.auth import me_alias_router
 
 app = FastAPI(title="Compare Economize API", version="1.0.0")
+
+# ✅ NOVO: middleware simples para aplicar headers de proxy no request.url (principalmente scheme)
+class ProxyHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        xf_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+        xf_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+
+        # Reescreve scheme/host usados internamente pelo request.url
+        if xf_proto:
+            request.scope["scheme"] = xf_proto
+
+        if xf_host:
+            request.scope["server"] = (xf_host, request.url.port or 443)
+
+        return await call_next(request)
+
+app.add_middleware(ProxyHeadersMiddleware)
 
 # ✅ CORS
 # ✅ NOVO: permite configurar origens extras via .env (EXTRA_CORS_ORIGINS)
@@ -65,8 +85,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ cria as tabelas no SQLite (compareeconomize.db)
-Base.metadata.create_all(bind=engine)
+# ✅ AJUSTE: cria tabelas no startup (evita rodar em import/reload)
+@app.on_event("startup")
+def on_startup():
+    Base.metadata.create_all(bind=engine)
 
 @app.get("/api/health")
 def health():
