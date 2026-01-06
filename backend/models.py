@@ -28,7 +28,14 @@ class User(Base):
 
     # ✅ NOVO (não quebra): permite login por e-mail/senha além do Google
     # Se você usa só Google hoje, isso fica NULL e não interfere.
+    # (mantido)
     passwordHash = Column(String, nullable=True)
+
+    # ✅ NOVO (profissional, não quebra): alias para compatibilidade com helpers do auth.py
+    # seu auth.py tenta: password_hash / hashed_password / passwordHash
+    # então a gente adiciona os dois mais comuns (sem remover o passwordHash)
+    password_hash = Column(String, nullable=True)
+    hashed_password = Column(String, nullable=True)
 
     # ✅ NOVO (não quebra): controle de permissão / admin
     # role: "user" | "admin"
@@ -40,6 +47,11 @@ class User(Base):
     emailVerified = Column(Boolean, nullable=False, default=False)
     emailVerifyCode = Column(String, nullable=True)
     emailVerifyExpiresAt = Column(DateTime(timezone=True), nullable=True)
+
+    # ✅ NOVO (profissional, não quebra): aliases para padronização (caso você use no front/back)
+    # Algumas partes podem esperar isEmailVerified/emailVerifiedAt.
+    isEmailVerified = Column(Boolean, nullable=False, default=False)
+    emailVerifiedAt = Column(DateTime(timezone=True), nullable=True)
 
     # ✅ NOVO (não quebra): auditoria
     createdAt = Column(DateTime(timezone=True), server_default=func.now())
