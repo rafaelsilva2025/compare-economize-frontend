@@ -27,7 +27,10 @@ import hmac
 # ✅ NOVO: envio de e-mail (código de verificação) sem libs externas
 import smtplib
 from email.message import EmailMessage
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# ✅ NOVO: melhora erros e evita 500 silencioso
+from sqlalchemy.exc import IntegrityError
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -147,7 +150,8 @@ def _verify_password(password: str, stored: str) -> bool:
 # ✅ Email verify helpers
 # ---------------------------
 def _now_utc():
-    return datetime.utcnow()
+    # ✅ FIX: timezone-aware para bater com TIMESTAMPTZ
+    return datetime.now(timezone.utc)
 
 
 def _generate_6digit_code() -> str:
@@ -416,7 +420,6 @@ async def google_login(request: Request, type: str = "user", redirectTo: str | N
     is_https = base.lower().startswith("https://")
 
     # ✅ FIX: cookies com valores codificados + path="/" (evita erro e perda de cookie)
-    # Se esses cookies quebrarem, o navegador pode mostrar 0 B / request failed
     try:
         resp.set_cookie("oauth_state", state, httponly=True, samesite="lax", path="/", secure=is_https)
         resp.set_cookie("oauth_type", (type or "user"), httponly=True, samesite="lax", path="/", secure=is_https)
@@ -441,7 +444,6 @@ async def google_callback(
     saved_state = request.cookies.get("oauth_state")
     account_type = request.cookies.get("oauth_type", "user")
 
-    # ✅ FIX: decodifica o redirect salvo em cookie
     saved_redirect_raw = request.cookies.get("oauth_redirect") or ""
     saved_redirect = _cookie_decode(saved_redirect_raw)
 
@@ -523,7 +525,7 @@ async def google_callback(
 
                 _set_user_account_type(u, (account_type or "user").lower())
 
-                # ✅ NOVO: Google = e-mail verificado
+                # ✅ Google = e-mail verificado
                 _set_user_email_verified(u, True)
                 _set_user_verify_code(u, None, None)
 
@@ -545,7 +547,7 @@ async def google_callback(
                     _set_user_account_type(u, (account_type or "user").lower())
                     changed = True
 
-                # ✅ NOVO: garante verificação pelo Google
+                # ✅ garante verificação pelo Google
                 if not _get_user_email_verified(u):
                     _set_user_email_verified(u, True)
                     _set_user_verify_code(u, None, None)
@@ -570,6 +572,10 @@ async def google_callback(
 
     except Exception as e:
         print("AUTH_CALLBACK_ERROR:", repr(e))
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
     join = "&" if "?" in frontend_redirect else "?"
     final_url = (
@@ -592,48 +598,68 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)):
     email = str(payload.email).lower().strip()
     account_type = (payload.account_type or "user").lower().strip()
 
-    existing = db.query(User).filter(User.email == email).first()
-    if existing:
-        return JSONResponse({"error": "email_already_exists"}, status_code=409)
-
-    u = User(id=str(uuid.uuid4()), email=email)
-    _set_user_full_name(u, payload.full_name)
-    _set_user_account_type(u, account_type)
-    _set_user_password_hash(u, _hash_password(payload.password))
-
-    # ✅ NOVO: cria código de verificação
-    code = _generate_6digit_code()
-    exp = _now_utc() + timedelta(minutes=15)
-    _set_user_email_verified(u, False)
-    _set_user_verify_code(u, code, exp)
-
-    db.add(u)
-    db.commit()
-    db.refresh(u)
-
-    # ✅ tenta enviar email (se não tiver SMTP, loga no console)
-    _send_email_code(email, code)
-
-    fake_token = secrets.token_urlsafe(32)
     try:
-        sess = AuthSession(token=fake_token, userId=u.id)
-        db.add(sess)
+        existing = db.query(User).filter(User.email == email).first()
+        if existing:
+            return JSONResponse({"error": "email_already_exists"}, status_code=409)
+
+        u = User(id=str(uuid.uuid4()), email=email)
+        _set_user_full_name(u, payload.full_name)
+        _set_user_account_type(u, account_type)
+        _set_user_password_hash(u, _hash_password(payload.password))
+
+        # ✅ cria código de verificação
+        code = _generate_6digit_code()
+        exp = _now_utc() + timedelta(minutes=15)
+        _set_user_email_verified(u, False)
+        _set_user_verify_code(u, code, exp)
+
+        db.add(u)
         db.commit()
+        db.refresh(u)
+
+        # ✅ tenta enviar email (se não tiver SMTP, loga no console)
+        _send_email_code(email, code)
+
+        fake_token = secrets.token_urlsafe(32)
+        try:
+            sess = AuthSession(token=fake_token, userId=u.id)
+            db.add(sess)
+            db.commit()
+        except Exception as e:
+            print("AUTH_REGISTER_SESSION_WARN:", repr(e))
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+        token_to_send = fake_token
+        if create_jwt:
+            token_to_send = create_jwt(user_id=u.id, email=u.email, account_type=_get_user_account_type(u, account_type))
+
+        return {
+            "token": token_to_send,
+            "user_id": u.id,
+            "email": u.email,
+            "account_type": _get_user_account_type(u, account_type),
+            "email_verified": _get_user_email_verified(u),
+            "verification_sent": True,
+        }
+
+    except IntegrityError as e:
+        print("AUTH_REGISTER_INTEGRITY_ERROR:", repr(e))
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return JSONResponse({"error": "register_failed", "detail": "integrity_error"}, status_code=500)
     except Exception as e:
-        print("AUTH_REGISTER_SESSION_WARN:", repr(e))
-
-    token_to_send = fake_token
-    if create_jwt:
-        token_to_send = create_jwt(user_id=u.id, email=u.email, account_type=_get_user_account_type(u, account_type))
-
-    return {
-        "token": token_to_send,
-        "user_id": u.id,
-        "email": u.email,
-        "account_type": _get_user_account_type(u, account_type),
-        "email_verified": _get_user_email_verified(u),
-        "verification_sent": True,
-    }
+        print("AUTH_REGISTER_ERROR:", repr(e))
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return JSONResponse({"error": "register_failed", "detail": repr(e)}, status_code=500)
 
 
 # ✅ NOVO: reenviar/gerar código de verificação
@@ -677,7 +703,10 @@ def verify_email_code(payload: VerifyEmailCodeIn, db: Session = Depends(get_db))
     if not saved_code or saved_code != code:
         return JSONResponse({"error": "invalid_code"}, status_code=400)
 
+    # ✅ FIX: compara timezone-aware
     if exp and isinstance(exp, datetime):
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
         if _now_utc() > exp:
             return JSONResponse({"error": "code_expired"}, status_code=400)
 
@@ -693,46 +722,59 @@ def verify_email_code(payload: VerifyEmailCodeIn, db: Session = Depends(get_db))
 def login(payload: LoginIn, db: Session = Depends(get_db)):
     email = str(payload.email).lower().strip()
 
-    u = db.query(User).filter(User.email == email).first()
-    if not u:
-        return JSONResponse({"error": "invalid_credentials"}, status_code=401)
-
-    stored = _get_user_password_hash(u)
-    if not stored or not _verify_password(payload.password, stored):
-        return JSONResponse({"error": "invalid_credentials"}, status_code=401)
-
-    # ✅ NOVO: se exigir email verificado, bloqueia
-    if REQUIRE_EMAIL_VERIFIED and not _get_user_email_verified(u):
-        return JSONResponse({"error": "email_not_verified"}, status_code=403)
-
-    acct = _get_user_account_type(u, "user")
-
-    fake_token = secrets.token_urlsafe(32)
     try:
-        sess = AuthSession(token=fake_token, userId=u.id)
-        db.add(sess)
-        db.commit()
+        u = db.query(User).filter(User.email == email).first()
+        if not u:
+            return JSONResponse({"error": "invalid_credentials"}, status_code=401)
+
+        stored = _get_user_password_hash(u)
+        if not stored or not _verify_password(payload.password, stored):
+            return JSONResponse({"error": "invalid_credentials"}, status_code=401)
+
+        # ✅ se exigir email verificado, bloqueia
+        if REQUIRE_EMAIL_VERIFIED and not _get_user_email_verified(u):
+            return JSONResponse({"error": "email_not_verified"}, status_code=403)
+
+        acct = _get_user_account_type(u, "user")
+
+        fake_token = secrets.token_urlsafe(32)
+        try:
+            sess = AuthSession(token=fake_token, userId=u.id)
+            db.add(sess)
+            db.commit()
+        except Exception as e:
+            print("AUTH_LOGIN_SESSION_WARN:", repr(e))
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+        token_to_send = fake_token
+        if create_jwt:
+            token_to_send = create_jwt(user_id=u.id, email=u.email, account_type=acct)
+
+        return {
+            "token": token_to_send,
+            "user_id": u.id,
+            "email": u.email,
+            "account_type": acct,
+            "email_verified": _get_user_email_verified(u),
+            "isAdmin": _get_user_is_admin(u),
+        }
+
     except Exception as e:
-        print("AUTH_LOGIN_SESSION_WARN:", repr(e))
-
-    token_to_send = fake_token
-    if create_jwt:
-        token_to_send = create_jwt(user_id=u.id, email=u.email, account_type=acct)
-
-    return {
-        "token": token_to_send,
-        "user_id": u.id,
-        "email": u.email,
-        "account_type": acct,
-        "email_verified": _get_user_email_verified(u),
-        "isAdmin": _get_user_is_admin(u),
-    }
+        print("AUTH_LOGIN_ERROR:", repr(e))
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return JSONResponse({"error": "login_failed", "detail": repr(e)}, status_code=500)
 
 
 # ✅ ORIGINAL (mantido)
 @router.get("/me")
 def me(db: Session = Depends(get_db), user=Depends(get_current_user)):
-    # ✅ ATUALIZADO: devolve payload enriquecido com isAdmin/role/emailVerified
+    # ✅ devolve payload enriquecido com isAdmin/role/emailVerified
     return _public_user_payload(db, user)
 
 
@@ -742,26 +784,34 @@ def me(db: Session = Depends(get_db), user=Depends(get_current_user)):
 # ADMIN_EMAIL=empresaslim@gmail.com
 # ADMIN_PASSWORD=92123522
 @router.post("/bootstrap-admin")
-def bootstrap_admin(request: Request, db: Session = Depends(get_db)):
+async def bootstrap_admin(request: Request, db: Session = Depends(get_db)):
     """
     Cria (ou promove) o ADMIN usando ENV + token.
     - Use UMA vez, depois pode remover ADMIN_BOOTSTRAP_TOKEN do Railway.
     """
+
+    # ✅ FIX: leitura correta de body no FastAPI
     body = {}
     try:
-        body = request._json if hasattr(request, "_json") else {}
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
     except Exception:
         body = {}
 
     # ✅ também aceita via header
     token = (request.headers.get("x-admin-bootstrap-token") or "").strip()
 
-    # ✅ e aceita no query param (fallback)
+    # ✅ aceita no query param (fallback)
     if not token:
         try:
             token = (request.query_params.get("token") or "").strip()
         except Exception:
             token = ""
+
+    # ✅ aceita também no JSON body (fallback)
+    if not token:
+        token = (body.get("token") or "").strip()
 
     if not ADMIN_BOOTSTRAP_TOKEN or token != ADMIN_BOOTSTRAP_TOKEN:
         return JSONResponse({"error": "forbidden"}, status_code=403)
@@ -772,27 +822,36 @@ def bootstrap_admin(request: Request, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.email == ADMIN_EMAIL).first()
     created = False
 
-    if not u:
-        u = User(id=str(uuid.uuid4()), email=ADMIN_EMAIL)
-        _set_user_full_name(u, "Admin")
-        _set_user_account_type(u, "business")  # admin pode ver empresa + usuário
-        _set_user_password_hash(u, _hash_password(ADMIN_PASSWORD))
-        _set_user_email_verified(u, True)
-        _set_user_verify_code(u, None, None)
-        _set_user_admin(u, True)
-        db.add(u)
-        db.commit()
-        db.refresh(u)
-        created = True
-    else:
-        # promove e garante senha e verificação
-        _set_user_admin(u, True)
-        if not _get_user_password_hash(u):
+    try:
+        if not u:
+            u = User(id=str(uuid.uuid4()), email=ADMIN_EMAIL)
+            _set_user_full_name(u, "Admin")
+            _set_user_account_type(u, "business")  # admin pode ver empresa + usuário
             _set_user_password_hash(u, _hash_password(ADMIN_PASSWORD))
-        _set_user_email_verified(u, True)
-        _set_user_verify_code(u, None, None)
-        db.commit()
-        db.refresh(u)
+            _set_user_email_verified(u, True)
+            _set_user_verify_code(u, None, None)
+            _set_user_admin(u, True)
+            db.add(u)
+            db.commit()
+            db.refresh(u)
+            created = True
+        else:
+            # promove e garante senha e verificação
+            _set_user_admin(u, True)
+            if not _get_user_password_hash(u):
+                _set_user_password_hash(u, _hash_password(ADMIN_PASSWORD))
+            _set_user_email_verified(u, True)
+            _set_user_verify_code(u, None, None)
+            db.commit()
+            db.refresh(u)
+
+    except Exception as e:
+        print("AUTH_BOOTSTRAP_ADMIN_ERROR:", repr(e))
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return JSONResponse({"error": "bootstrap_failed", "detail": repr(e)}, status_code=500)
 
     return {
         "ok": True,

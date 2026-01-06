@@ -86,6 +86,20 @@ app.add_middleware(
 # ✅ AJUSTE: cria tabelas no startup (evita rodar em import/reload)
 @app.on_event("startup")
 def on_startup():
+    # ✅ IMPORTANTE: garante que TODOS os models foram carregados
+    # Sem isso, o SQLAlchemy não registra tabelas e create_all não cria nada no Postgres.
+    try:
+        import models  # noqa: F401
+    except Exception as e:
+        print("WARN: failed importing models:", repr(e))
+
+    # ✅ DEBUG: mostra qual banco está sendo usado (Railway vs SQLite)
+    try:
+        # seu db.py vai usar DATABASE_URL (vamos ajustar depois), mas aqui já ajuda a ver o valor
+        print("BOOT DATABASE_URL =", os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or "sqlite (default?)")
+    except Exception:
+        pass
+
     Base.metadata.create_all(bind=engine)
 
 @app.get("/api/health")
@@ -117,4 +131,3 @@ app.include_router(me_alias_router, prefix="/api")
 
 # ✅ Billing já tem prefix "/api/billing" dentro do router, então NÃO coloca prefix aqui
 app.include_router(billing_router)
-
