@@ -54,7 +54,7 @@ def _is_admin(user) -> bool:
     )
 
 
-@router.get("")
+@router.get("", operation_id="markets_list_markets")
 def list_markets(businessId: str | None = None, db: Session = Depends(get_db), user=Depends(get_current_user)):
     q = db.query(Market)
 
@@ -85,7 +85,7 @@ def list_markets(businessId: str | None = None, db: Session = Depends(get_db), u
     return [serialize_market(m) for m in items]
 
 
-@router.post("")
+@router.post("", operation_id="markets_create_market")
 def create_market(payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     uid = _get_user_id(user)
     if not uid:
@@ -129,7 +129,8 @@ def create_market(payload: dict, db: Session = Depends(get_db), user=Depends(get
     return serialize_market(m)
 
 
-@router.put("/{market_id}")
+# ✅ FIX PROFISSIONAL: operation_id único (remove o warning do Railway/FastAPI)
+@router.put("/{market_id}", operation_id="markets_update_market")
 def update_market(market_id: str, payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     uid = _get_user_id(user)
     if not uid:

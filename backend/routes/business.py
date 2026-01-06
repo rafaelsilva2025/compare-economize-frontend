@@ -77,7 +77,7 @@ def _require_owner_or_admin(b: Business, user):
 # 🔹 NOVO ENDPOINT (ADMIN) - lista TODAS as empresas
 # GET /api/business/all
 # =====================================================
-@router.get("/all")
+@router.get("/all", operation_id="business_list_all_businesses")
 def list_all_businesses(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
@@ -93,7 +93,7 @@ def list_all_businesses(
 # 🔹 NOVO ENDPOINT (alias moderno para o frontend novo)
 # GET /api/business/me
 # =====================================================
-@router.get("/me")
+@router.get("/me", operation_id="business_get_my_business_single")
 def get_my_business_single(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
@@ -115,7 +115,7 @@ def get_my_business_single(
 # 🔹 ENDPOINT ANTIGO (MANTIDO – NÃO REMOVIDO)
 # GET /api/business/my
 # =====================================================
-@router.get("/my")
+@router.get("/my", operation_id="business_my_business")
 def my_business(db: Session = Depends(get_db), user=Depends(get_current_user)):
     uid = _get_user_id(user)
     if not uid:
@@ -133,7 +133,7 @@ def my_business(db: Session = Depends(get_db), user=Depends(get_current_user)):
 # =====================================================
 # CREATE BUSINESS
 # =====================================================
-@router.post("")
+@router.post("", operation_id="business_create_business")
 def create_business(payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     uid = _get_user_id(user)
     if not uid:
@@ -167,7 +167,7 @@ def create_business(payload: dict, db: Session = Depends(get_db), user=Depends(g
 # =====================================================
 # UPDATE BUSINESS
 # =====================================================
-@router.put("/{business_id}")
+@router.put("/{business_id}", operation_id="business_update_business")
 def update_business(business_id: str, payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     b = db.query(Business).filter(Business.id == business_id).first()
     if not b:
@@ -191,7 +191,7 @@ def update_business(business_id: str, payload: dict, db: Session = Depends(get_d
 # =====================================================
 # LIST MARKETS (com ou sem businessId)
 # =====================================================
-@router.get("/markets")
+@router.get("/markets", operation_id="business_list_my_markets")
 def list_my_markets(
     businessId: str | None = None,
     db: Session = Depends(get_db),
@@ -234,7 +234,7 @@ def list_my_markets(
 # =====================================================
 # CREATE MARKET
 # =====================================================
-@router.post("/markets")
+@router.post("/markets", operation_id="business_create_market")
 def create_market(payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     uid = _get_user_id(user)
     if not uid:
@@ -281,7 +281,8 @@ def create_market(payload: dict, db: Session = Depends(get_db), user=Depends(get
 # =====================================================
 # UPDATE MARKET
 # =====================================================
-@router.put("/markets/{market_id}")
+# ✅ FIX PROFISSIONAL: operation_id único (remove warning de Duplicate Operation ID)
+@router.put("/markets/{market_id}", operation_id="business_update_market")
 def update_market(market_id: str, payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     uid = _get_user_id(user)
     if not uid:
