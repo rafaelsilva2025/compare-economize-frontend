@@ -44,7 +44,7 @@ export default function Footer() {
           </DialogHeader>
           <div className="space-y-3 mt-4">
             <a 
-              href="mailto:compareeconomize@gmail.com"
+              href="mailto:compareeeconomize@gmail.com"
               className="flex items-center justify-center gap-3 py-3 px-4 bg-gray-50 hover:bg-gray-100 rounded-xl transition-colors"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none">

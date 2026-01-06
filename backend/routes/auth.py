@@ -32,7 +32,7 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 FRONTEND_URL_DEFAULT = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 # ✅ NOVO: força base pública do backend (RECOMENDADO em produção)
-# Ex: https://api.compareeeeconomize.com.br
+# Ex: https://api.compareeeconomize.com.br
 PUBLIC_BACKEND_URL = (os.getenv("PUBLIC_BACKEND_URL") or "").strip().rstrip("/")
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"

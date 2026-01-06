@@ -95,7 +95,7 @@ export default function PagamentoErro() {
             <div className="mt-6 pt-6 border-t border-gray-100 text-center">
               <p className="text-sm text-gray-500">
                 Precisa de ajuda?{' '}
-                <a href="mailto:suporte@compareeconomize.com" className="text-emerald-600 hover:underline">
+                <a href="mailto:suporte@compareeeconomize.com" className="text-emerald-600 hover:underline">
                   Entre em contato
                 </a>
               </p>
