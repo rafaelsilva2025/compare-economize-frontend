@@ -90,13 +90,13 @@ export default function PlanosEmpresas() {
           return;
         }
 
-        console.time("GET /api/me");
-        const currentUser = await apiRequest("/api/me");
-        console.timeEnd("GET /api/me");
+        console.time("GET /api/auth/me");
+        const currentUser = await apiRequest("/api/auth/me", { method: "GET" });
+        console.timeEnd("GET /api/auth/me");
 
         setUser(currentUser);
       } catch (error) {
-        console.timeEnd?.("GET /api/me");
+        console.timeEnd?.("GET /api/auth/me");
         setUser(null);
       }
     };
@@ -110,7 +110,7 @@ export default function PlanosEmpresas() {
     queryFn: async () => {
       console.time("GET /api/plans/business");
       try {
-        const data = await apiRequest("/api/plans/business");
+        const data = await apiRequest("/api/plans/business", { method: "GET" });
         console.timeEnd("GET /api/plans/business");
 
         if (Array.isArray(data) && data.length > 0) {
@@ -217,17 +217,18 @@ export default function PlanosEmpresas() {
     }
   }, [selectedPlanParam]);
 
-  // ✅ NOVO: cria pagamento REAL no Mercado Pago via backend
+  // ✅ cria pagamento REAL no Mercado Pago via backend
   const createMercadoPagoCheckout = async ({ planTier, price }) => {
     // backend exige: plan = "pro" | "premium"
     const plan = String(planTier || "").toLowerCase().includes("premium") ? "premium" : "pro";
 
+    // ✅ ATUALIZADO: body como objeto (apiClient já transforma em JSON)
     const res = await apiRequest("/api/billing/create", {
       method: "POST",
-      body: JSON.stringify({
+      body: {
         plan,
         price: Number(price),
-      }),
+      },
     });
 
     return res;
@@ -244,14 +245,13 @@ export default function PlanosEmpresas() {
       return;
     }
 
-    const priceNum = Number(plan?.price || 0);
+    const priceFromPlan = Number(plan?.price || 0);
 
-    if (priceNum === 0) {
+    if (priceFromPlan === 0) {
       toast.success('Plano Básico ativo! Configure seu estabelecimento.');
       return;
     }
 
-    // ✅ aqui decidimos o plano real pro backend (pro/premium)
     const tierLower = String(plan?.tier || "").toLowerCase();
     const nameLower = String(plan?.name || "").toLowerCase();
     const idLower = String(plan?.id || "").toLowerCase();
@@ -263,19 +263,23 @@ export default function PlanosEmpresas() {
 
     const selectedTier = isPremiumPlan ? "premium" : "pro";
 
+    // ✅ TESTE: valores diferentes por plano (como você pediu)
+    // pro = 1.01, premium = 1.02
+    const testPrice = selectedTier === "premium" ? 1.02 : 1.01;
+
+    const toastId = toast.loading('Abrindo checkout do Mercado Pago...');
+
     try {
       setIsCreatingPayment(true);
-      toast.loading('Abrindo checkout do Mercado Pago...');
 
-      // ✅ chama backend e recebe init_point
       const payment = await createMercadoPagoCheckout({
         planTier: selectedTier,
-        price: priceNum,
+        price: testPrice, // ✅ aqui força 1.01/1.02
       });
 
       console.log("MP_CREATE_RESPONSE", payment);
 
-      toast.dismiss();
+      toast.dismiss(toastId);
 
       const initPoint = payment?.init_point;
       if (!initPoint) {
@@ -286,13 +290,10 @@ export default function PlanosEmpresas() {
 
       toast.success("Redirecionando para o pagamento...");
 
-      // ✅ Redireciona para o link real do MP
       window.location.href = initPoint;
-
-      // ❗ não damos navigate depois disso porque a página vai mudar pro MP
     } catch (error) {
       console.error('PAYMENT_ERROR', error);
-      toast.dismiss();
+      toast.dismiss(toastId);
       toast.error(error?.message || 'Não foi possível iniciar o pagamento. Tente novamente.');
     } finally {
       setIsCreatingPayment(false);
@@ -398,7 +399,7 @@ export default function PlanosEmpresas() {
         </motion.div>
       </section>
 
-      {/* Plans — BASE EXATA (com os ajustes mínimos para seu projeto) */}
+      {/* Plans */}
       <section className="max-w-6xl mx-auto px-4 py-12">
         <div className="grid md:grid-cols-3 gap-6">
           {isLoading ? (
@@ -412,7 +413,6 @@ export default function PlanosEmpresas() {
                 </div>
               </div>
 
-              {/* mantém 3 skeletons no desktop, igual seu layout */}
               <div className="bg-white rounded-2xl p-8 border border-gray-200 animate-pulse hidden md:block">
                 <div className="h-24 bg-gray-100 rounded-xl mb-6" />
                 <div className="space-y-3">
@@ -467,7 +467,6 @@ export default function PlanosEmpresas() {
                   </div>
                 )}
 
-                {/* Header */}
                 <div className="mb-6">
                   <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4 ${
                     isPremium || isPro ? 'bg-white/20' : 'bg-gray-100'
@@ -493,7 +492,6 @@ export default function PlanosEmpresas() {
                   )}
                 </div>
 
-                {/* Features */}
                 <div className="space-y-3 mb-8 flex-1">
                   {(plan.features || []).map((feature, idx) => (
                     <div key={idx} className="flex items-start gap-2">
@@ -505,9 +503,8 @@ export default function PlanosEmpresas() {
                   ))}
                 </div>
 
-                {/* CTA */}
                 <button
-                  type="button" // ✅ ADICIONADO
+                  type="button"
                   onClick={() => handleSelectPlan(plan)}
                   disabled={isCreatingPayment && priceNum > 0}
                   style={{ height: '56px' }}
@@ -527,7 +524,7 @@ export default function PlanosEmpresas() {
         </div>
       </section>
 
-      {/* ✅ Compare Table (igual print) */}
+      {/* ✅ Compare Table */}
       <section className="max-w-6xl mx-auto px-4 pb-16">
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-8">
           <h2 className="text-3xl font-bold text-gray-900">Compare os planos</h2>
@@ -579,7 +576,7 @@ export default function PlanosEmpresas() {
         </div>
       </section>
 
-      {/* ✅ FAQ (igual print) */}
+      {/* ✅ FAQ */}
       <section className="max-w-6xl mx-auto px-4 pb-16">
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-8">
           <h2 className="text-3xl font-bold text-gray-900">Perguntas frequentes</h2>
@@ -612,7 +609,7 @@ export default function PlanosEmpresas() {
         </div>
       </section>
 
-      {/* ✅ CTA (igual print) */}
+      {/* ✅ CTA */}
       <section className="max-w-6xl mx-auto px-4 pb-20">
         <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-10 text-white text-center">
           <div className="w-16 h-16 rounded-2xl bg-white/15 flex items-center justify-center mx-auto mb-6">

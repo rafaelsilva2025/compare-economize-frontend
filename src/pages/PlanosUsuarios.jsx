@@ -35,7 +35,8 @@ export default function PlanosUsuarios() {
           return;
         }
 
-        const user = await apiRequest("/api/me");
+        // ✅ padroniza com seu Login.jsx (usa /api/auth/me)
+        const user = await apiRequest("/api/auth/me", { method: "GET" });
         setCurrentUser(user);
         setIsAuthenticated(true);
       } catch (error) {
@@ -56,7 +57,7 @@ export default function PlanosUsuarios() {
         const token = localStorage.getItem("token");
         if (!token) return null;
 
-        const subs = await apiRequest("/api/subscriptions/me");
+        const subs = await apiRequest("/api/subscriptions/me", { method: "GET" });
         return subs || null;
       } catch {
         return null;
@@ -121,19 +122,21 @@ export default function PlanosUsuarios() {
 
     try {
       setIsCreatingPayment(true);
-      toast.loading('Abrindo checkout do Mercado Pago...');
 
-      // ✅ IGUAL EMPRESA: cria preferência no backend e redireciona para init_point
-      const resp = await apiRequest({
+      const toastId = toast.loading('Abrindo checkout do Mercado Pago...');
+
+      // ✅ cria preferência no backend e redireciona para init_point
+      // ✅ ATUALIZADO: body como objeto (apiClient já transforma em JSON)
+      const resp = await apiRequest("/api/billing/create-user", {
         method: "POST",
-        url: "/api/billing/create-user",
-        data: {
+        body: {
           plan: "premium",
-          price: 9.9,
-        }
+          // ✅ TESTE USUÁRIO: R$ 1,00
+          price: 1.00,
+        },
       });
 
-      toast.dismiss();
+      toast.dismiss(toastId);
 
       if (resp?.init_point) {
         toast.success("Redirecionando para pagamento...");
@@ -143,7 +146,7 @@ export default function PlanosUsuarios() {
 
       console.warn("Backend não retornou init_point. Resp:", resp);
       toast.error("Não foi possível gerar o link do Mercado Pago.");
-      
+
       // ✅ (mantido, mas NÃO usado) fallback antigo:
       // const payload = {
       //   plan_code: 'user_premium',
@@ -157,7 +160,6 @@ export default function PlanosUsuarios() {
 
     } catch (error) {
       console.error('PAYMENT_ERROR', error);
-      toast.dismiss();
       toast.error('Não foi possível iniciar o pagamento. Tente novamente.');
     } finally {
       setIsCreatingPayment(false);

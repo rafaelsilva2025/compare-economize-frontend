@@ -24,6 +24,10 @@ router = APIRouter(prefix="/api/billing", tags=["Billing"])
 # 🔐 Mercado Pago
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 
+# ✅ NOVO (SEM APAGAR NADA): modo (test/prod) só para log/segurança
+# Você pode setar MP_MODE=prod quando for produção (opcional).
+MP_MODE = (os.getenv("MP_MODE") or "").strip().lower()  # "test" | "prod" | ""
+
 # ✅ AJUSTE (NÃO APAGA NADA): não derruba a API no import/startup.
 # Em produção no Railway, derrubar o app inteiro por env faltando é ruim: /api/health também cai.
 # Então mantemos as validações, mas aplicamos de forma “controlada” nas rotas.
@@ -40,13 +44,24 @@ else:
             "Use o Access Token do Mercado Pago (TEST-... ou APP_USR-...)."
         )
 
-    # ✅ PRODUÇÃO: garante que você não está rodando com TEST-
-    # (mantém compatível com sandbox, mas impede você de "achar" que é produção quando não é)
+    # ✅ AJUSTE IMPORTANTE:
+    # Antes você BLOQUEAVA token TEST- sempre -> isso impede testar!
+    # Agora:
+    # - TEST- é permitido (modo teste)
+    # - Se você quiser bloquear TEST- em produção, set MP_MODE=prod e ele avisa/erra.
     if str(MP_ACCESS_TOKEN).strip().startswith("TEST-"):
-        _MP_FATAL_ERROR = (
-            "Você está com MP_ACCESS_TOKEN de TESTE (TEST-...). "
-            "Para PRODUÇÃO use APP_USR-... em MP_ACCESS_TOKEN no .env/Variables."
-        )
+        if MP_MODE == "prod":
+            _MP_FATAL_ERROR = (
+                "MP_ACCESS_TOKEN é de TESTE (TEST-...) mas MP_MODE=prod. "
+                "Para produção use APP_USR-... no MP_ACCESS_TOKEN."
+            )
+        else:
+            # ✅ não trava, só avisa
+            print("⚠️ Mercado Pago em modo TESTE (TEST-...). Isso é OK para testar.")
+
+    if str(MP_ACCESS_TOKEN).strip().startswith("APP_USR-"):
+        if MP_MODE == "test":
+            print("⚠️ Você está com token de PRODUÇÃO (APP_USR-...) mas MP_MODE=test.")
 
 # ✅ AJUSTE (NÃO APAGA NADA): só cria o SDK se estiver tudo ok e a lib importou.
 sdk = None
@@ -96,6 +111,11 @@ def _subscription_kwargs_safe(data: dict) -> dict:
 def _build_preference(*, title: str, price_float: float, payer_email: str, payment_ref: str, metadata: dict | None = None):
     """
     Cria o payload da preferência do Mercado Pago com URLs corretas
+
+    ✅ ATUALIZADO (sem apagar nada):
+    - Continua sendo pagamento AVULSO (preference/checkout)
+    - Não restringe método de pagamento (cartão + pix + saldo)
+    - binary_mode=True reduz casos pendentes
     """
     # ✅ URLs de retorno (ABSOLUTAS e válidas)
     success_url = f"{FRONTEND_URL}/PagamentoSucesso"
@@ -111,14 +131,19 @@ def _build_preference(*, title: str, price_float: float, payer_email: str, payme
                 "title": title,
                 "quantity": 1,
                 "currency_id": "BRL",
-                "unit_price": price_float,
+                "unit_price": float(price_float),
             }
         ],
         # ⚠️ NÃO removi nada: só tirei daqui e vou adicionar abaixo condicionalmente
         # "payer": {"email": payer_email},
         "external_reference": payment_ref,
 
+        # ✅ ATUALIZADO:
+        # binary_mode True -> evita ficar "pending" demais (ajuda muito em checkout)
+        "binary_mode": True,
+
         # ✅ mantemos sem auto_return (você já comentou o motivo)
+        # se você quiser voltar automático ao site após aprovado, pode ligar:
         # "auto_return": "approved",
 
         "back_urls": {
@@ -130,6 +155,14 @@ def _build_preference(*, title: str, price_float: float, payer_email: str, payme
 
     # ✅ PRODUÇÃO: sempre envia payer (evita comportamento estranho do checkout e ajuda no antifraude)
     preference["payer"] = {"email": payer_email}
+
+    # ✅ NÃO restringe payment_methods (isso é o que você quer)
+    # - se você excluir pix/saldo sem querer, pode travar o checkout em alguns cenários.
+    # - deixando sem payment_methods, o MP decide (cartão/pix/saldo conforme elegível).
+    # Porém, podemos ajudar cartão com parcelas liberadas:
+    preference["payment_methods"] = {
+        "installments": 12  # ✅ permite parcelar (não bloqueia pix/saldo)
+    }
 
     # ✅ metadata ajuda MUITO pra identificar se é user ou business no webhook
     if metadata and isinstance(metadata, dict):
@@ -249,7 +282,7 @@ def _verify_mp_signature_if_possible(request: Request, raw_body: bytes) -> bool:
     return hmac.compare_digest(expected, v1)
 
 
-# 💳 Criar assinatura (EMPRESA - Pro / Premium)
+# 💳 Criar pagamento (EMPRESA - Pro / Premium)
 @router.post("/create")
 def create_subscription(
     data: dict,
@@ -283,9 +316,9 @@ def create_subscription(
     if price_float <= 0:
         raise HTTPException(status_code=400, detail="Price deve ser maior que zero")
 
-    # ✅ PRODUÇÃO: força valores pequenos conforme você pediu
-    # - empresa pro: 1,01
-    # - empresa premium: 1,02
+    # ✅ AJUSTE PEDIDO: FORÇA valores fixos para teste em PRODUÇÃO
+    # - Empresa Pro: 1,01
+    # - Empresa Premium: 1,02
     if plan == "pro":
         price_float = 1.01
     elif plan == "premium":
@@ -330,7 +363,7 @@ def create_subscription(
             },
         )
 
-    # ✅ PRODUÇÃO: usa init_point (produção)
+    # ✅ usa init_point (produção) e fallback sandbox_init_point
     init_point = resp.get("init_point") or resp.get("sandbox_init_point")
 
     if not init_point:
@@ -365,7 +398,7 @@ def create_subscription(
     }
 
 
-# ✅ NOVO: Criar assinatura (USUÁRIO - Premium)
+# ✅ Criar pagamento (USUÁRIO - Premium)
 @router.post("/create-user")
 def create_user_subscription(
     data: dict,
@@ -400,7 +433,8 @@ def create_user_subscription(
     if price_float <= 0:
         raise HTTPException(status_code=400, detail="Price deve ser maior que zero")
 
-    # ✅ PRODUÇÃO: força valor pequeno conforme você pediu (usuário: 1,00)
+    # ✅ AJUSTE PEDIDO: FORÇA valor fixo para teste em PRODUÇÃO
+    # - Usuário Premium: 1,00
     price_float = 1.00
 
     payment_ref = str(uuid.uuid4())
@@ -436,7 +470,6 @@ def create_user_subscription(
             },
         )
 
-    # ✅ PRODUÇÃO: usa init_point (produção)
     init_point = resp.get("init_point") or resp.get("sandbox_init_point")
 
     if not init_point:
@@ -608,5 +641,4 @@ async def mp_webhook(request: Request, db: Session = Depends(get_db)):
         print("❌ ERRO GERAL NO WEBHOOK:", str(e))
         traceback.print_exc()
         return JSONResponse({"status": "handled_error", "detail": str(e)}, status_code=200)
-    
-    
+
