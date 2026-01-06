@@ -61,8 +61,6 @@ app.add_middleware(
         # Local
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
 
         # ✅ seu domínio (produção) — 3 "e"
         "https://compareeeconomize.com.br",

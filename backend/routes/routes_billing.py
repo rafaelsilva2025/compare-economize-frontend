@@ -608,3 +608,4 @@ async def mp_webhook(request: Request, db: Session = Depends(get_db)):
         print("❌ ERRO GERAL NO WEBHOOK:", str(e))
         traceback.print_exc()
         return JSONResponse({"status": "handled_error", "detail": str(e)}, status_code=200)
+    
