@@ -117,3 +117,4 @@ app.include_router(me_alias_router, prefix="/api")
 
 # ✅ Billing já tem prefix "/api/billing" dentro do router, então NÃO coloca prefix aqui
 app.include_router(billing_router)
+

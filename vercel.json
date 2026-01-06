@@ -2,8 +2,8 @@
   "redirects": [
     {
       "source": "/(.*)",
-      "has": [{ "type": "host", "value": "www.compareeeconomize.com.br" }],
-      "destination": "https://compareeeconomize.com.br/$1",
+      "has": [{ "type": "host", "value": "compareeeconomize.com.br" }],
+      "destination": "https://www.compareeeconomize.com.br/$1",
       "permanent": true
     }
   ],
