@@ -2,12 +2,90 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 import random
 from datetime import datetime, timedelta
+import os
+
 
 from db import get_db
 from models import Business
 from auth_jwt import get_current_user
 
 router = APIRouter(prefix="/stats", tags=["stats"])
+
+
+# ✅ NOVO (sem apagar nada): helpers para suportar user como dict OU como model
+def _get_user_field(user, key: str, default=None):
+    try:
+        if isinstance(user, dict):
+            return user.get(key, default)
+        return getattr(user, key, default)
+    except Exception:
+        return default
+
+
+def _get_user_id(user) -> str | None:
+    # tenta padrões comuns: id / user_id / sub
+    uid = _get_user_field(user, "id")
+    if uid:
+        return str(uid)
+
+    uid = _get_user_field(user, "user_id")
+    if uid:
+        return str(uid)
+
+    uid = _get_user_field(user, "sub")
+    if uid:
+        return str(uid)
+
+    return None
+
+
+# ✅ NOVO: admin allowlist por ENV (produção)
+# você pode setar no Railway:
+# ADMIN_EMAILS=empresaslim@gmail.com,outra@admin.com
+_ADMIN_EMAILS_RAW = (os.getenv("ADMIN_EMAILS") or "").strip()
+_ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in _ADMIN_EMAILS_RAW.split(",")
+    if e.strip()
+}
+
+# ✅ fallback (se você não setar ENV ainda)
+# (pode remover depois se quiser, mas não é obrigatório)
+_DEFAULT_ADMIN_EMAIL = "empresaslim@gmail.com"
+
+
+def _is_admin(user) -> bool:
+    # aceita vários formatos do seu sistema sem depender do model exato
+
+    # ✅ 1) flag direto no usuário (recomendado)
+    is_admin_flag = _get_user_field(user, "isAdmin", None)
+    if is_admin_flag is True:
+        return True
+
+    # ✅ 2) role
+    role = str(_get_user_field(user, "role", "") or "").lower().strip()
+    if role == "admin":
+        return True
+
+    # ✅ 3) allowlist por email (recomendado p/ produção)
+    email = str(_get_user_field(user, "email", "") or "").lower().strip()
+    if email and email in _ADMIN_EMAILS:
+        return True
+
+    # ✅ 4) fallback hardcoded (pra você testar já)
+    if email and email == _DEFAULT_ADMIN_EMAIL:
+        return True
+
+    # ✅ 5) compat antiga (não depende disso, mas não removi)
+    # OBS: seu plan é free/pro/premium — não use "admin" aqui, mas mantive compat.
+    plan = str(_get_user_field(user, "plan", "") or "").lower().strip()
+    acc_type = str(_get_user_field(user, "account_type", "") or "").lower().strip()
+    typ = str(_get_user_field(user, "type", "") or "").lower().strip()
+
+    if plan == "admin" or acc_type == "admin" or typ == "admin":
+        return True
+
+    return False
 
 
 def _require_business_owner(db: Session, business_id: str, user_id: str) -> Business:
@@ -19,6 +97,27 @@ def _require_business_owner(db: Session, business_id: str, user_id: str) -> Busi
     return biz
 
 
+# ✅ NOVO (sem apagar nada): mesma lógica, mas com bypass de admin
+def _require_business_owner_or_admin(db: Session, business_id: str, user) -> Business:
+    biz = db.query(Business).filter(Business.id == business_id).first()
+    if not biz:
+        raise HTTPException(status_code=404, detail="business not found")
+
+    # ✅ ADMIN vê tudo
+    if _is_admin(user):
+        return biz
+
+    # ✅ usuário normal: precisa ser owner
+    user_id = _get_user_id(user)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    if biz.ownerId != user_id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    return biz
+
+
 @router.get("/business/{business_id}")
 def business_stats(
     business_id: str,
@@ -26,7 +125,8 @@ def business_stats(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    _require_business_owner(db, business_id, user["id"])
+    # ✅ ALTERADO (sem remover a função antiga): agora aceita admin também
+    _require_business_owner_or_admin(db, business_id, user)
 
     days = max(7, min(int(days), 180))
     now = datetime.utcnow()

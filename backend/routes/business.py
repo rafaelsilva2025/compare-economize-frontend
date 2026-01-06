@@ -10,6 +10,85 @@ from auth_jwt import get_current_user
 router = APIRouter(prefix="/business", tags=["business"])
 
 
+# ✅ NOVO (sem apagar nada): helpers para suportar user como dict OU como model
+def _get_user_field(user, key: str, default=None):
+    try:
+        if isinstance(user, dict):
+            return user.get(key, default)
+        return getattr(user, key, default)
+    except Exception:
+        return default
+
+
+def _get_user_id(user) -> str | None:
+    # tenta padrões comuns: id / user_id / sub
+    uid = _get_user_field(user, "id")
+    if uid:
+        return str(uid)
+    uid = _get_user_field(user, "user_id")
+    if uid:
+        return str(uid)
+    uid = _get_user_field(user, "sub")
+    if uid:
+        return str(uid)
+    return None
+
+
+def _is_admin(user) -> bool:
+    # aceita vários formatos
+    plan = str(_get_user_field(user, "plan", "") or "").lower().strip()
+    acc_type = str(_get_user_field(user, "account_type", "") or "").lower().strip()
+    typ = str(_get_user_field(user, "type", "") or "").lower().strip()
+    role = str(_get_user_field(user, "role", "") or "").lower().strip()
+    accountType = str(_get_user_field(user, "accountType", "") or "").lower().strip()
+    email = str(_get_user_field(user, "email", "") or "").lower().strip()
+
+    # ✅ seu admin fixo
+    if email == "empresaslim@gmail.com":
+        return True
+
+    return (
+        plan == "admin"
+        or acc_type == "admin"
+        or accountType == "admin"
+        or typ == "admin"
+        or role == "admin"
+    )
+
+
+def _require_owner_or_admin(b: Business, user):
+    if not b:
+        raise HTTPException(status_code=404, detail="business not found")
+
+    if _is_admin(user):
+        return True
+
+    uid = _get_user_id(user)
+    if not uid:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    if b.ownerId != uid:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    return True
+
+
+# =====================================================
+# 🔹 NOVO ENDPOINT (ADMIN) - lista TODAS as empresas
+# GET /api/business/all
+# =====================================================
+@router.get("/all")
+def list_all_businesses(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    items = db.query(Business).all()
+    return [serialize_business(b) for b in items]
+
+
 # =====================================================
 # 🔹 NOVO ENDPOINT (alias moderno para o frontend novo)
 # GET /api/business/me
@@ -19,7 +98,16 @@ def get_my_business_single(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    b = db.query(Business).filter(Business.ownerId == user["id"]).first()
+    uid = _get_user_id(user)
+    if not uid:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    # ✅ admin: pode pegar "a primeira" como compatibilidade (ou retornar None se não existir)
+    if _is_admin(user):
+        b = db.query(Business).first()
+        return serialize_business(b) if b else None
+
+    b = db.query(Business).filter(Business.ownerId == uid).first()
     return serialize_business(b) if b else None
 
 
@@ -29,7 +117,16 @@ def get_my_business_single(
 # =====================================================
 @router.get("/my")
 def my_business(db: Session = Depends(get_db), user=Depends(get_current_user)):
-    items = db.query(Business).filter(Business.ownerId == user["id"]).all()
+    uid = _get_user_id(user)
+    if not uid:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    # ✅ admin: vê tudo (útil para testes)
+    if _is_admin(user):
+        items = db.query(Business).all()
+        return [serialize_business(b) for b in items]
+
+    items = db.query(Business).filter(Business.ownerId == uid).all()
     return [serialize_business(b) for b in items]
 
 
@@ -38,13 +135,17 @@ def my_business(db: Session = Depends(get_db), user=Depends(get_current_user)):
 # =====================================================
 @router.post("")
 def create_business(payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    uid = _get_user_id(user)
+    if not uid:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
     name = (payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
 
     b = Business(
         id=str(uuid.uuid4()),
-        ownerId=user["id"],
+        ownerId=uid,  # ✅ corrigido (funciona dict OU model)
         name=name,
         category=payload.get("category"),
         contactEmail=payload.get("contactEmail"),
@@ -71,8 +172,9 @@ def update_business(business_id: str, payload: dict, db: Session = Depends(get_d
     b = db.query(Business).filter(Business.id == business_id).first()
     if not b:
         raise HTTPException(status_code=404, detail="business not found")
-    if b.ownerId != user["id"]:
-        raise HTTPException(status_code=403, detail="forbidden")
+
+    # ✅ admin bypass / owner check
+    _require_owner_or_admin(b, user)
 
     for field in [
         "name", "category", "contactEmail", "phone", "address", "city", "state",
@@ -95,19 +197,32 @@ def list_my_markets(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    # se businessId vier, valida dono
+    uid = _get_user_id(user)
+    if not uid:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    # se businessId vier, valida dono (ou admin)
     if businessId:
         b = db.query(Business).filter(Business.id == businessId).first()
         if not b:
             return []
-        if b.ownerId != user["id"]:
+
+        # ✅ admin vê tudo
+        if not _is_admin(user) and b.ownerId != uid:
             raise HTTPException(status_code=403, detail="forbidden")
+
         items = db.query(Market).filter(Market.businessId == businessId).all()
         return [serialize_market(m) for m in items]
 
-    # sem businessId: pega das empresas do user
+    # sem businessId:
+    # ✅ admin: lista tudo
+    if _is_admin(user):
+        items = db.query(Market).all()
+        return [serialize_market(m) for m in items]
+
+    # usuário normal: pega das empresas do user
     my_business_ids = [
-        b.id for b in db.query(Business).filter(Business.ownerId == user["id"]).all()
+        b.id for b in db.query(Business).filter(Business.ownerId == uid).all()
     ]
     if not my_business_ids:
         return []
@@ -121,6 +236,10 @@ def list_my_markets(
 # =====================================================
 @router.post("/markets")
 def create_market(payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    uid = _get_user_id(user)
+    if not uid:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
     businessId = payload.get("businessId")
     if not businessId:
         raise HTTPException(status_code=400, detail="businessId is required")
@@ -128,7 +247,9 @@ def create_market(payload: dict, db: Session = Depends(get_db), user=Depends(get
     b = db.query(Business).filter(Business.id == businessId).first()
     if not b:
         raise HTTPException(status_code=404, detail="business not found")
-    if b.ownerId != user["id"]:
+
+    # ✅ admin bypass / owner check
+    if not _is_admin(user) and b.ownerId != uid:
         raise HTTPException(status_code=403, detail="forbidden")
 
     name = (payload.get("name") or "").strip()
@@ -162,6 +283,10 @@ def create_market(payload: dict, db: Session = Depends(get_db), user=Depends(get
 # =====================================================
 @router.put("/markets/{market_id}")
 def update_market(market_id: str, payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    uid = _get_user_id(user)
+    if not uid:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
     m = db.query(Market).filter(Market.id == market_id).first()
     if not m:
         raise HTTPException(status_code=404, detail="market not found")
@@ -170,7 +295,11 @@ def update_market(market_id: str, payload: dict, db: Session = Depends(get_db), 
         raise HTTPException(status_code=403, detail="market has no businessId")
 
     b = db.query(Business).filter(Business.id == m.businessId).first()
-    if not b or b.ownerId != user["id"]:
+
+    # ✅ admin bypass / owner check
+    if not b:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not _is_admin(user) and b.ownerId != uid:
         raise HTTPException(status_code=403, detail="forbidden")
 
     for field in [

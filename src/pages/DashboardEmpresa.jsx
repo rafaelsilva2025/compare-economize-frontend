@@ -93,6 +93,24 @@ const MOCK_SUBSCRIPTION_INACTIVE = { id: "s_mock_1", status: "inactive", planId:
 
 const MOCK_STATS = { views: 1247, clicks: 89, comparisons: 156 };
 
+// ✅ NOVO (sem apagar nada): detecta admin igual o PlanRoute
+function isAdminUser(user) {
+  if (!user) return false;
+
+  const plan = String(user.plan || "").toLowerCase().trim();
+  const role = String(user.role || "").toLowerCase().trim();
+  const type = String(user.type || "").toLowerCase().trim();
+  const accountType = String(user.accountType || user.account_type || "").toLowerCase().trim();
+  const email = String(user.email || "").toLowerCase().trim();
+
+  if (plan === "admin" || role === "admin" || type === "admin" || accountType === "admin") return true;
+
+  // ✅ seu admin fixo
+  if (email === "empresaslim@gmail.com") return true;
+
+  return false;
+}
+
 export default function DashboardEmpresa() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -138,6 +156,11 @@ export default function DashboardEmpresa() {
         // seu apiRequest no projeto tem assinatura: apiRequest(url, { method, body })
         const me = await apiRequest("/api/auth/me", { method: "GET" });
         if (mounted) setUser(me);
+
+        // ✅ NOVO: garante que o PlanRoute/Front tenham user atualizado
+        try {
+          localStorage.setItem("user", JSON.stringify(me || null));
+        } catch {}
       } catch (e) {
         // fallback: hook
         if (mounted && userFromHook) setUser(userFromHook);
@@ -158,21 +181,35 @@ export default function DashboardEmpresa() {
     };
   }, [userFromHook]);
 
+  // ✅ NOVO: flag admin
+  const isAdmin = useMemo(() => isAdminUser(user), [user]);
+
   /**
    * ✅ Buscar empresas do usuário (API real)
    * Rotas tentadas:
    * 1) GET /api/business/my
    * 2) GET /api/business?ownerId=...
+   * ✅ NOVO: (ADMIN) tenta GET /api/business/all
    * fallback mock em DEV
    */
   const {
     data: businesses = [],
     isLoading: isLoadingBusinesses,
   } = useQuery({
-    queryKey: ["userBusinesses", user?.id],
+    queryKey: ["userBusinesses", user?.id, isAdmin],
     enabled: !!user,
     retry: false,
     queryFn: async () => {
+      // ✅ ADMIN: tenta ver tudo (se existir a rota no backend)
+      if (isAdmin) {
+        try {
+          const all = await apiRequest("/api/business/all", { method: "GET" });
+          if (Array.isArray(all) && all.length > 0) return all;
+        } catch (e) {
+          // segue para os fallbacks antigos
+        }
+      }
+
       try {
         const list = await apiRequest("/api/business/my", { method: "GET" });
         return Array.isArray(list) ? list : [];
@@ -190,6 +227,7 @@ export default function DashboardEmpresa() {
   });
 
   // Base44 pegava a primeira empresa
+  // ✅ NOVO: admin também escolhe a primeira se existir
   const business = businesses?.[0] || businessFromHook || null;
 
   /**
@@ -236,10 +274,21 @@ export default function DashboardEmpresa() {
    * fallback mock
    */
   const { data: subscription, isLoading: isLoadingSubscription } = useQuery({
-    queryKey: ["businessSubscription", business?.id],
+    queryKey: ["businessSubscription", business?.id, isAdmin],
     enabled: !!business?.id,
     retry: false,
     queryFn: async () => {
+      // ✅ NOVO: admin não depende de subscription para liberar UI
+      if (isAdmin) {
+        return {
+          id: "admin_subscription",
+          status: "active",
+          planId: "premium",
+          plan: "premium",
+          admin: true,
+        };
+      }
+
       try {
         const url = withQuery("/api/subscription/active", { businessId: business.id });
         const res = await apiRequest(url, { method: "GET" });
@@ -440,7 +489,11 @@ export default function DashboardEmpresa() {
   };
 
   // ====== Plan visual ======
-  const currentPlanName = plan?.name || "Básico";
+  // ✅ NOVO: admin sempre "Premium" na UI (não depende do backend)
+  const forcedPlanNameForAdmin = "Premium";
+
+  const currentPlanName = isAdmin ? forcedPlanNameForAdmin : (plan?.name || "Básico");
+
   const planColors = {
     Básico: { bg: "from-gray-50 to-gray-100", text: "text-gray-700", icon: Building2 },
     Pro: { bg: "from-blue-50 to-indigo-100", text: "text-blue-700", icon: TrendingUp },
@@ -487,6 +540,16 @@ export default function DashboardEmpresa() {
             <div>
               <h1 className="font-semibold text-gray-900">Dashboard Empresarial</h1>
               <p className="text-xs text-gray-500">{user?.email}</p>
+
+              {/* ✅ NOVO: badge admin */}
+              {isAdmin && (
+                <div className="mt-1 inline-flex items-center gap-2">
+                  <span className="px-2 py-0.5 bg-black text-white rounded-full text-[11px] font-semibold">
+                    ADMIN
+                  </span>
+                  <span className="text-[11px] text-gray-500">Acesso total (sem pagamento)</span>
+                </div>
+              )}
             </div>
           </div>
         </div>

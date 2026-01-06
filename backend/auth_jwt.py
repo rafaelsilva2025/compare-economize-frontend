@@ -28,6 +28,95 @@ def create_jwt(user_id: str, email: str, account_type: str = "user"):
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
+# ✅ NOVO (sem quebrar nada):
+# wrapper para compatibilidade total:
+# - permite user.id e user["id"]
+# - permite user.email e user["email"]
+# - permite user.type e user["type"]
+# - permite user.isAdmin / user["isAdmin"]
+class _UserCompat:
+    def __init__(self, user_obj: User, token_type: str | None = None):
+        self._u = user_obj
+
+        # ✅ mantém compatibilidade: algumas partes usam "type"
+        # (o models usa accountType)
+        try:
+            self.type = getattr(user_obj, "accountType", None) or token_type or "user"
+        except Exception:
+            self.type = token_type or "user"
+
+    def __getattr__(self, name):
+        # fallback para atributos do SQLAlchemy User
+        return getattr(self._u, name)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except Exception:
+            return default
+
+    def __getitem__(self, key):
+        # ✅ padroniza chaves comuns
+        k = str(key)
+
+        if k in ("id", "sub"):
+            return getattr(self._u, "id", None)
+
+        if k == "email":
+            return getattr(self._u, "email", None)
+
+        if k in ("type", "accountType", "account_type"):
+            return getattr(self._u, "accountType", None) or getattr(self, "type", "user")
+
+        if k == "name":
+            return getattr(self._u, "name", None) or getattr(self._u, "full_name", None)
+
+        if k == "plan":
+            return getattr(self._u, "plan", None)
+
+        # ✅ admin flags
+        if k in ("isAdmin", "admin"):
+            if hasattr(self._u, "isAdmin") and bool(getattr(self._u, "isAdmin", False)):
+                return True
+            if hasattr(self._u, "role") and str(getattr(self._u, "role", "")).lower() == "admin":
+                return True
+            return False
+
+        if k == "role":
+            return getattr(self._u, "role", None) or ("admin" if self["isAdmin"] else "user")
+
+        if k in ("emailVerified", "email_verified"):
+            return bool(getattr(self._u, "emailVerified", False)) if hasattr(self._u, "emailVerified") else False
+
+        # fallback: tenta atributo direto
+        if hasattr(self._u, k):
+            return getattr(self._u, k)
+
+        raise KeyError(k)
+
+    def to_dict(self):
+        # útil para debug
+        return {
+            "id": self["id"],
+            "email": self["email"],
+            "type": self["type"],
+            "name": self["name"],
+            "plan": self.get("plan"),
+            "isAdmin": self.get("isAdmin"),
+            "role": self.get("role"),
+            "emailVerified": self.get("emailVerified"),
+        }
+
+
+def _wrap_user(u: User, token_type: str | None = None):
+    # ✅ mantém retorno como "User", mas com compat total
+    # (isso resolve rotas que fazem user["id"])
+    try:
+        return _UserCompat(u, token_type=token_type)
+    except Exception:
+        return u
+
+
 def get_current_user(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(security),
@@ -64,7 +153,9 @@ def get_current_user(
                 setattr(u, "type", getattr(u, "accountType", data.get("type", "user")))
             except Exception:
                 pass
-            return u
+
+            # ✅ NOVO: retorna wrapped (compat com user["id"])
+            return _wrap_user(u, token_type=data.get("type", "user"))
 
         # fallback se por algum motivo usuário não existir no banco
         return {
@@ -98,7 +189,8 @@ def get_current_user(
             pass
 
         # ✅ retorna o User real (melhor para rotas como billing, me, etc.)
-        return u
+        # ✅ NOVO: wrapped (compat com user["id"])
+        return _wrap_user(u, token_type=getattr(u, "accountType", "user"))
 
     except HTTPException:
         raise

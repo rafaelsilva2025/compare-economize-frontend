@@ -33,7 +33,7 @@ export default function Login() {
   // Usa VITE_API_URL se existir; senão cai no domínio de produção correto
   const BACKEND_URL = useMemo(() => {
     const raw = (import.meta?.env?.VITE_API_URL || "").trim();
-    const fallback = "https://api.compareeeconomize.com.br";
+    const fallback = "https://api.compareeeeconomize.com.br";
     const base = raw || fallback;
     return base.endsWith("/") ? base.slice(0, -1) : base;
   }, []);
@@ -73,6 +73,40 @@ export default function Login() {
   // ✅ helper: normaliza tipo
   const normalizeType = (t) => String(t || "").toLowerCase().trim();
 
+  // ✅ NOVO: regra ADMIN no frontend (sem remover nada)
+  const ADMIN_EMAIL = "empresaslim@gmail.com";
+
+  const applyAdminOverride = (userObj, emailCandidate) => {
+    try {
+      const e = String(emailCandidate || userObj?.email || "").toLowerCase().trim();
+      if (e !== ADMIN_EMAIL) return userObj;
+
+      const u = { ...(userObj || {}) };
+
+      // ✅ força flags que o restante do front pode usar
+      u.plan = "admin";
+      u.role = "admin";
+
+      // ✅ também ajuda compatibilidade com lugares que leem "type/account_type"
+      // (não muda o que veio do backend, só garante fallback)
+      if (!u.type && u.account_type) u.type = u.account_type;
+      if (!u.account_type && u.type) u.account_type = u.type;
+
+      return u;
+    } catch {
+      return userObj;
+    }
+  };
+
+  const isAdminUser = (userObj, emailCandidate) => {
+    const e = String(emailCandidate || userObj?.email || "").toLowerCase().trim();
+    const plan = String(userObj?.plan || "").toLowerCase().trim();
+    const role = String(userObj?.role || "").toLowerCase().trim();
+    const type = String(userObj?.type || userObj?.account_type || "").toLowerCase().trim();
+
+    return e === ADMIN_EMAIL || plan === "admin" || role === "admin" || type === "admin";
+  };
+
   // ✅ 1) Se veio do Google com token na URL: salva e busca /me
   useEffect(() => {
     const run = async () => {
@@ -87,7 +121,10 @@ export default function Login() {
         localStorage.setItem("signup_account_type", accountType);
 
         // ✅ endpoint certo (e chamada consistente)
-        const me = await apiRequest("/api/auth/me", { method: "GET" });
+        const meRaw = await apiRequest("/api/auth/me", { method: "GET" });
+
+        // ✅ aplica admin override (se for o email admin)
+        const me = applyAdminOverride(meRaw, meRaw?.email);
 
         localStorage.setItem("user", JSON.stringify(me));
 
@@ -95,6 +132,12 @@ export default function Login() {
 
         // ✅ remove token da URL para não repetir login ao atualizar
         const type = normalizeType(me?.account_type || me?.type || accountType || "");
+
+        // ✅ ADMIN sempre cai no dashboard empresarial (pra ver tudo)
+        if (isAdminUser(me, me?.email)) {
+          navigate("/DashboardEmpresa", { replace: true });
+          return;
+        }
 
         if (type === "business" || type === "empresa") {
           navigate("/DashboardEmpresa", { replace: true });
@@ -152,10 +195,20 @@ export default function Login() {
       localStorage.setItem("signup_account_type", accountType);
 
       // ✅ 3) Busca /me (fonte de verdade)
-      const me = await apiRequest("/api/auth/me", { method: "GET" });
+      const meRaw = await apiRequest("/api/auth/me", { method: "GET" });
+
+      // ✅ aplica admin override (se for o email admin informado no login)
+      const me = applyAdminOverride(meRaw, email);
+
       localStorage.setItem("user", JSON.stringify(me));
 
       toast.success(isSignup ? "Conta criada com sucesso!" : "Login realizado!", { id: toastId });
+
+      // ✅ ADMIN sempre cai no dashboard empresarial (pra ver tudo)
+      if (isAdminUser(me, email)) {
+        navigate("/DashboardEmpresa", { replace: true });
+        return;
+      }
 
       const type = normalizeType(me?.account_type || me?.type || accountType || "");
       if (type === "business" || type === "empresa") {

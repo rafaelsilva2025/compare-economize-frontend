@@ -77,7 +77,18 @@ function AppRoutesWithLayout() {
         <Route path="/ComoFunciona" element={<ComoFunciona />} />
         <Route path="/Comparacao" element={<Comparacao />} />
         <Route path="/CriarConta" element={<CriarConta />} />
-        <Route path="/DashboardEmpresa" element={<DashboardEmpresa />} />
+
+        {/* ✅ ATUALIZADO: DashboardEmpresa agora exige login
+            (e se você quiser travar por plano depois, é só colocar requirePlan={["pro","premium"]}) */}
+        <Route
+          path="/DashboardEmpresa"
+          element={
+            <PrivateRoute>
+              <DashboardEmpresa />
+            </PrivateRoute>
+          }
+        />
+
         <Route path="/HoteisComparacao" element={<HoteisComparacao />} />
         <Route path="/MarketDetail" element={<MarketDetail />} />
         <Route path="/Mercados" element={<Mercados />} />
@@ -107,11 +118,13 @@ function AppRoutesWithLayout() {
           }
         />
 
-        {/* ✅ PlanRoute - por enquanto libera relatórios (depois a gente trava por pagamento) */}
+        {/* ✅ PlanRoute - mantido
+            ✅ ATUALIZADO: adiciona "admin" na lista allow
+            (assim, quando o user.plan for "admin", ele passa aqui também) */}
         <Route
           path="/Relatorios"
           element={
-            <PlanRoute allowFree={true} allow={["pro", "premium"]}>
+            <PlanRoute allowFree={true} allow={["pro", "premium", "admin"]}>
               <Relatorios />
             </PlanRoute>
           }

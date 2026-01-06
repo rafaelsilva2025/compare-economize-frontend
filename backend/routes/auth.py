@@ -24,6 +24,11 @@ import hashlib
 import base64
 import hmac
 
+# ✅ NOVO: envio de e-mail (código de verificação) sem libs externas
+import smtplib
+from email.message import EmailMessage
+from datetime import datetime, timedelta
+
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -38,6 +43,22 @@ PUBLIC_BACKEND_URL = (os.getenv("PUBLIC_BACKEND_URL") or "").strip().rstrip("/")
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+# ✅ NOVO: exigir email verificado no login (opcional)
+REQUIRE_EMAIL_VERIFIED = (os.getenv("REQUIRE_EMAIL_VERIFIED") or "").strip() == "1"
+
+# ✅ NOVO: bootstrap admin (produção) com token único
+ADMIN_BOOTSTRAP_TOKEN = (os.getenv("ADMIN_BOOTSTRAP_TOKEN") or "").strip()
+ADMIN_EMAIL = (os.getenv("ADMIN_EMAIL") or "").strip().lower()
+ADMIN_PASSWORD = (os.getenv("ADMIN_PASSWORD") or "").strip()
+
+# ✅ NOVO: SMTP para envio de código (opcional)
+SMTP_HOST = (os.getenv("SMTP_HOST") or "").strip()
+SMTP_PORT = int((os.getenv("SMTP_PORT") or "587").strip() or "587")
+SMTP_USER = (os.getenv("SMTP_USER") or "").strip()
+SMTP_PASS = (os.getenv("SMTP_PASS") or "").strip()
+SMTP_FROM = (os.getenv("SMTP_FROM") or SMTP_USER or "no-reply@compareeconomize.com").strip()
+SMTP_TLS = (os.getenv("SMTP_TLS") or "1").strip() != "0"
 
 
 # ✅ NOVO: detecta base externa correta atrás de proxy (Railway/Cloudflare/etc.)
@@ -123,6 +144,115 @@ def _verify_password(password: str, stored: str) -> bool:
 
 
 # ---------------------------
+# ✅ Email verify helpers
+# ---------------------------
+def _now_utc():
+    return datetime.utcnow()
+
+
+def _generate_6digit_code() -> str:
+    return str(secrets.randbelow(1_000_000)).zfill(6)
+
+
+def _send_email_code(to_email: str, code: str) -> bool:
+    """
+    Envia email via SMTP se configurado.
+    Se SMTP não estiver configurado, apenas loga (não quebra cadastro).
+    """
+    to_email = (to_email or "").strip().lower()
+    if not to_email:
+        return False
+
+    if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
+        print(f"⚠️ SMTP não configurado. Código para {to_email}: {code}")
+        return True
+
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "Seu código de verificação - Compare Economize"
+        msg["From"] = SMTP_FROM
+        msg["To"] = to_email
+        msg.set_content(
+            f"Seu código de verificação é: {code}\n\n"
+            f"Se você não solicitou isso, ignore este email."
+        )
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+            if SMTP_TLS:
+                server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+
+        return True
+    except Exception as e:
+        print("EMAIL_SEND_ERROR:", repr(e))
+        return False
+
+
+def _set_user_email_verified(u, value: bool):
+    if hasattr(u, "emailVerified"):
+        u.emailVerified = bool(value)
+        return
+    setattr(u, "emailVerified", bool(value))
+
+
+def _set_user_verify_code(u, code: str | None, expires_at):
+    if hasattr(u, "emailVerifyCode"):
+        u.emailVerifyCode = code
+    else:
+        setattr(u, "emailVerifyCode", code)
+
+    if hasattr(u, "emailVerifyExpiresAt"):
+        u.emailVerifyExpiresAt = expires_at
+    else:
+        setattr(u, "emailVerifyExpiresAt", expires_at)
+
+
+def _get_user_email_verified(u) -> bool:
+    if hasattr(u, "emailVerified"):
+        return bool(getattr(u, "emailVerified", False))
+    return False
+
+
+def _get_user_verify_code(u):
+    if hasattr(u, "emailVerifyCode"):
+        return getattr(u, "emailVerifyCode", None)
+    return None
+
+
+def _get_user_verify_expires(u):
+    if hasattr(u, "emailVerifyExpiresAt"):
+        return getattr(u, "emailVerifyExpiresAt", None)
+    return None
+
+
+def _set_user_admin(u, is_admin: bool):
+    # mantém compatibilidade: role + isAdmin
+    if hasattr(u, "isAdmin"):
+        u.isAdmin = bool(is_admin)
+    else:
+        setattr(u, "isAdmin", bool(is_admin))
+
+    if hasattr(u, "role"):
+        u.role = "admin" if is_admin else "user"
+    else:
+        setattr(u, "role", "admin" if is_admin else "user")
+
+    # admin deve ter acesso a tudo sem pagar
+    if hasattr(u, "plan"):
+        if bool(is_admin):
+            u.plan = "premium"
+
+
+def _get_user_is_admin(u) -> bool:
+    if hasattr(u, "isAdmin") and getattr(u, "isAdmin", False):
+        return True
+    if hasattr(u, "role") and str(getattr(u, "role", "")).lower() == "admin":
+        return True
+    return False
+
+
+# ---------------------------
 # ✅ Schemas (email/senha)
 # ---------------------------
 class RegisterIn(BaseModel):
@@ -135,6 +265,15 @@ class RegisterIn(BaseModel):
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+
+
+class RequestEmailCodeIn(BaseModel):
+    email: EmailStr
+
+
+class VerifyEmailCodeIn(BaseModel):
+    email: EmailStr
+    code: str
 
 
 def _get_user_password_hash(u):
@@ -186,6 +325,62 @@ def _get_user_account_type(u, fallback: str = "user") -> str:
     if acct is None and hasattr(u, "accountType"):
         acct = getattr(u, "accountType", None)
     return (acct or fallback or "user").lower()
+
+
+def _issue_token_for_user(u: User, account_type: str):
+    fake_token = secrets.token_urlsafe(32)
+
+    # mantém sessão fake (como você já fazia)
+    try:
+        sess = AuthSession(token=fake_token, userId=u.id)
+        return fake_token, sess
+    except Exception:
+        return fake_token, None
+
+
+def _jwt_for_user(u: User, account_type: str):
+    token_to_send = secrets.token_urlsafe(32)
+    if create_jwt:
+        token_to_send = create_jwt(
+            user_id=u.id,
+            email=u.email,
+            account_type=_get_user_account_type(u, account_type),
+        )
+    return token_to_send
+
+
+def _public_user_payload(db: Session, user_dep_value):
+    """
+    Compat: seu get_current_user pode devolver dict ou algo.
+    Aqui garantimos que /me devolve os campos do User do banco,
+    incluindo isAdmin/role/emailVerified/plan.
+    """
+    try:
+        uid = None
+        if isinstance(user_dep_value, dict):
+            uid = user_dep_value.get("id") or user_dep_value.get("sub")
+        else:
+            uid = getattr(user_dep_value, "id", None)
+
+        if not uid:
+            return user_dep_value
+
+        u = db.query(User).filter(User.id == str(uid)).first()
+        if not u:
+            return user_dep_value
+
+        return {
+            "id": u.id,
+            "email": u.email,
+            "name": getattr(u, "name", None) or getattr(u, "full_name", None),
+            "accountType": _get_user_account_type(u, "user"),
+            "plan": getattr(u, "plan", "free"),
+            "isAdmin": _get_user_is_admin(u),
+            "role": getattr(u, "role", "user"),
+            "emailVerified": _get_user_email_verified(u),
+        }
+    except Exception:
+        return user_dep_value
 
 
 @router.get("/google")
@@ -328,6 +523,10 @@ async def google_callback(
 
                 _set_user_account_type(u, (account_type or "user").lower())
 
+                # ✅ NOVO: Google = e-mail verificado
+                _set_user_email_verified(u, True)
+                _set_user_verify_code(u, None, None)
+
                 db.add(u)
                 db.commit()
                 db.refresh(u)
@@ -344,6 +543,12 @@ async def google_callback(
                 acct_now = _get_user_account_type(u, account_type or "user")
                 if acct_now != (account_type or "user").lower():
                     _set_user_account_type(u, (account_type or "user").lower())
+                    changed = True
+
+                # ✅ NOVO: garante verificação pelo Google
+                if not _get_user_email_verified(u):
+                    _set_user_email_verified(u, True)
+                    _set_user_verify_code(u, None, None)
                     changed = True
 
                 if changed:
@@ -396,9 +601,18 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)):
     _set_user_account_type(u, account_type)
     _set_user_password_hash(u, _hash_password(payload.password))
 
+    # ✅ NOVO: cria código de verificação
+    code = _generate_6digit_code()
+    exp = _now_utc() + timedelta(minutes=15)
+    _set_user_email_verified(u, False)
+    _set_user_verify_code(u, code, exp)
+
     db.add(u)
     db.commit()
     db.refresh(u)
+
+    # ✅ tenta enviar email (se não tiver SMTP, loga no console)
+    _send_email_code(email, code)
 
     fake_token = secrets.token_urlsafe(32)
     try:
@@ -412,7 +626,66 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)):
     if create_jwt:
         token_to_send = create_jwt(user_id=u.id, email=u.email, account_type=_get_user_account_type(u, account_type))
 
-    return {"token": token_to_send, "user_id": u.id, "email": u.email, "account_type": _get_user_account_type(u, account_type)}
+    return {
+        "token": token_to_send,
+        "user_id": u.id,
+        "email": u.email,
+        "account_type": _get_user_account_type(u, account_type),
+        "email_verified": _get_user_email_verified(u),
+        "verification_sent": True,
+    }
+
+
+# ✅ NOVO: reenviar/gerar código de verificação
+@router.post("/request-email-code")
+def request_email_code(payload: RequestEmailCodeIn, db: Session = Depends(get_db)):
+    email = str(payload.email).lower().strip()
+    u = db.query(User).filter(User.email == email).first()
+    if not u:
+        # não vaza se email existe ou não
+        return {"ok": True, "sent": True}
+
+    if _get_user_email_verified(u):
+        return {"ok": True, "sent": False, "already_verified": True}
+
+    code = _generate_6digit_code()
+    exp = _now_utc() + timedelta(minutes=15)
+    _set_user_verify_code(u, code, exp)
+
+    db.commit()
+
+    _send_email_code(email, code)
+    return {"ok": True, "sent": True}
+
+
+# ✅ NOVO: validar código e marcar emailVerified
+@router.post("/verify-email-code")
+def verify_email_code(payload: VerifyEmailCodeIn, db: Session = Depends(get_db)):
+    email = str(payload.email).lower().strip()
+    code = str(payload.code or "").strip()
+
+    u = db.query(User).filter(User.email == email).first()
+    if not u:
+        return JSONResponse({"error": "invalid_code"}, status_code=400)
+
+    if _get_user_email_verified(u):
+        return {"ok": True, "email_verified": True}
+
+    saved_code = _get_user_verify_code(u)
+    exp = _get_user_verify_expires(u)
+
+    if not saved_code or saved_code != code:
+        return JSONResponse({"error": "invalid_code"}, status_code=400)
+
+    if exp and isinstance(exp, datetime):
+        if _now_utc() > exp:
+            return JSONResponse({"error": "code_expired"}, status_code=400)
+
+    _set_user_email_verified(u, True)
+    _set_user_verify_code(u, None, None)
+    db.commit()
+
+    return {"ok": True, "email_verified": True}
 
 
 # ✅ NOVO: Login por email/senha (sem remover nada)
@@ -428,6 +701,10 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
     if not stored or not _verify_password(payload.password, stored):
         return JSONResponse({"error": "invalid_credentials"}, status_code=401)
 
+    # ✅ NOVO: se exigir email verificado, bloqueia
+    if REQUIRE_EMAIL_VERIFIED and not _get_user_email_verified(u):
+        return JSONResponse({"error": "email_not_verified"}, status_code=403)
+
     acct = _get_user_account_type(u, "user")
 
     fake_token = secrets.token_urlsafe(32)
@@ -442,21 +719,105 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
     if create_jwt:
         token_to_send = create_jwt(user_id=u.id, email=u.email, account_type=acct)
 
-    return {"token": token_to_send, "user_id": u.id, "email": u.email, "account_type": acct}
+    return {
+        "token": token_to_send,
+        "user_id": u.id,
+        "email": u.email,
+        "account_type": acct,
+        "email_verified": _get_user_email_verified(u),
+        "isAdmin": _get_user_is_admin(u),
+    }
 
 
 # ✅ ORIGINAL (mantido)
 @router.get("/me")
-def me(user=Depends(get_current_user)):
-    return user
+def me(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    # ✅ ATUALIZADO: devolve payload enriquecido com isAdmin/role/emailVerified
+    return _public_user_payload(db, user)
 
 
-# ✅ NOVO: ALIAS real para compatibilidade com o FRONT
-# Front chama /api/me → cai aqui → usa o mesmo JWT
-# (não usa "/../me" porque isso NÃO cria um path válido)
+# ✅ NOVO: bootstrap admin com segurança (produção)
+# Configure no Railway:
+# ADMIN_BOOTSTRAP_TOKEN=umtokenforte
+# ADMIN_EMAIL=empresaslim@gmail.com
+# ADMIN_PASSWORD=92123522
+@router.post("/bootstrap-admin")
+def bootstrap_admin(request: Request, db: Session = Depends(get_db)):
+    """
+    Cria (ou promove) o ADMIN usando ENV + token.
+    - Use UMA vez, depois pode remover ADMIN_BOOTSTRAP_TOKEN do Railway.
+    """
+    body = {}
+    try:
+        body = request._json if hasattr(request, "_json") else {}
+    except Exception:
+        body = {}
+
+    # ✅ também aceita via header
+    token = (request.headers.get("x-admin-bootstrap-token") or "").strip()
+
+    # ✅ e aceita no query param (fallback)
+    if not token:
+        try:
+            token = (request.query_params.get("token") or "").strip()
+        except Exception:
+            token = ""
+
+    if not ADMIN_BOOTSTRAP_TOKEN or token != ADMIN_BOOTSTRAP_TOKEN:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+        return JSONResponse({"error": "missing_admin_envs"}, status_code=500)
+
+    u = db.query(User).filter(User.email == ADMIN_EMAIL).first()
+    created = False
+
+    if not u:
+        u = User(id=str(uuid.uuid4()), email=ADMIN_EMAIL)
+        _set_user_full_name(u, "Admin")
+        _set_user_account_type(u, "business")  # admin pode ver empresa + usuário
+        _set_user_password_hash(u, _hash_password(ADMIN_PASSWORD))
+        _set_user_email_verified(u, True)
+        _set_user_verify_code(u, None, None)
+        _set_user_admin(u, True)
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        created = True
+    else:
+        # promove e garante senha e verificação
+        _set_user_admin(u, True)
+        if not _get_user_password_hash(u):
+            _set_user_password_hash(u, _hash_password(ADMIN_PASSWORD))
+        _set_user_email_verified(u, True)
+        _set_user_verify_code(u, None, None)
+        db.commit()
+        db.refresh(u)
+
+    return {
+        "ok": True,
+        "created": created,
+        "email": u.email,
+        "user_id": u.id,
+        "isAdmin": True,
+        "plan": getattr(u, "plan", "premium"),
+    }
+
+
+# ✅ NOVO: endpoint para checar admin (útil pro front)
+@router.get("/is-admin")
+def is_admin(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    data = _public_user_payload(db, user)
+    try:
+        return {"isAdmin": bool(data.get("isAdmin"))}
+    except Exception:
+        return {"isAdmin": False}
+
+
+# ✅ NOVO: ALIAS real para compatibilidade com o FRONT (mantido)
 me_alias_router = APIRouter(tags=["auth-compat"])
 
 
 @me_alias_router.get("/me", include_in_schema=False)
-def me_alias(user=Depends(get_current_user)):
-    return user
+def me_alias(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    return _public_user_payload(db, user)

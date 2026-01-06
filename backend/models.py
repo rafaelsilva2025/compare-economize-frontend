@@ -26,6 +26,25 @@ class User(Base):
     # free | pro | premium
     plan = Column(String, nullable=False, default="free")
 
+    # ✅ NOVO (não quebra): permite login por e-mail/senha além do Google
+    # Se você usa só Google hoje, isso fica NULL e não interfere.
+    passwordHash = Column(String, nullable=True)
+
+    # ✅ NOVO (não quebra): controle de permissão / admin
+    # role: "user" | "admin"
+    role = Column(String, nullable=False, default="user")
+    isAdmin = Column(Boolean, nullable=False, default=False)
+
+    # ✅ NOVO (não quebra): confirmação de e-mail por código
+    # - Para Google OAuth, você pode marcar emailVerified=True automaticamente no login/cadastro.
+    emailVerified = Column(Boolean, nullable=False, default=False)
+    emailVerifyCode = Column(String, nullable=True)
+    emailVerifyExpiresAt = Column(DateTime(timezone=True), nullable=True)
+
+    # ✅ NOVO (não quebra): auditoria
+    createdAt = Column(DateTime(timezone=True), server_default=func.now())
+    updatedAt = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
     businesses = relationship("Business", back_populates="owner")
 
     # ✅ NOVO (não quebra): facilita navegar do user -> subscriptions
