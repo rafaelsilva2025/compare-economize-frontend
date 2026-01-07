@@ -33,14 +33,15 @@ target_metadata = Base.metadata
 
 # ✅ NOVO: pega URL do banco por ENV (Railway) com fallback para alembic.ini
 def _get_database_url() -> str:
-    # Railway normalmente define DATABASE_URL
+    # Railway normalmente define DATABASE_URL (se você criar a variável no service)
     url = (os.getenv("DATABASE_URL") or "").strip()
 
     # fallback (caso você use outra variável por algum motivo)
     if not url:
         url = (os.getenv("POSTGRES_URL") or "").strip()
 
-    # fallback final: alembic.ini (mas evite %(DATABASE_URL)s no Windows)
+    # fallback final: alembic.ini
+    # ⚠️ Evite usar %(DATABASE_URL)s no Windows (InterpolationMissingOptionError)
     if not url:
         url = (config.get_main_option("sqlalchemy.url") or "").strip()
 
@@ -49,6 +50,11 @@ def _get_database_url() -> str:
             "DATABASE_URL não encontrado. Defina DATABASE_URL no ambiente (Railway) "
             "ou configure sqlalchemy.url no alembic.ini."
         )
+
+    # ✅ segurança: se alguém deixou DATABASE_URL vazio/placeholder
+    if url.lower().startswith("sqlite") and (os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID")):
+        # Se você está rodando via Railway, SQLite quase sempre é erro de configuração
+        print("⚠️ AVISO: Você está em ambiente Railway e DATABASE_URL parece SQLite. Verifique as Variáveis no Railway.")
 
     return url
 
@@ -68,13 +74,20 @@ def run_migrations_offline() -> None:
     # ✅ ATUALIZADO: usa DATABASE_URL (ENV) primeiro
     url = _get_database_url()
 
+    # ✅ NOVO: injeta no config também (compatibilidade / logs)
+    # (não quebra nada e evita confusão)
+    try:
+        config.set_main_option("sqlalchemy.url", url)
+    except Exception:
+        pass
+
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,     # ✅ NOVO: detecta mudança de tipo (opcional mas recomendado)
-        compare_server_default=True,  # ✅ NOVO: detecta default server-side
+        compare_type=True,              # ✅ NOVO: detecta mudança de tipo
+        compare_server_default=True,    # ✅ NOVO: detecta default server-side
     )
 
     with context.begin_transaction():
@@ -90,6 +103,12 @@ def run_migrations_online() -> None:
     """
     # ✅ ATUALIZADO: usa DATABASE_URL do ENV (Railway) para criar engine
     db_url = _get_database_url()
+
+    # ✅ NOVO: injeta no config também (compatibilidade / logs)
+    try:
+        config.set_main_option("sqlalchemy.url", db_url)
+    except Exception:
+        pass
 
     # ✅ NOVO: engine direto (melhor para Railway/Windows)
     connectable = create_engine(
@@ -111,8 +130,8 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            compare_type=True,           # ✅ NOVO
-            compare_server_default=True, # ✅ NOVO
+            compare_type=True,            # ✅ NOVO
+            compare_server_default=True,  # ✅ NOVO
         )
 
         with context.begin_transaction():
