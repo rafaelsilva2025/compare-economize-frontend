@@ -2,11 +2,10 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
-from sqlalchemy import create_engine  # ✅ NOVO
-
+from sqlalchemy import create_engine  # ✅ NOVO (mantém)
 from alembic import context
 
-import os  # ✅ NOVO
+import os  # ✅ NOVO (mantém)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -31,19 +30,27 @@ target_metadata = Base.metadata
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
+# ✅ NOVO: normaliza postgres:// -> postgresql:// (Railway às vezes usa postgres://)
+def _normalize_database_url(url: str) -> str:
+    url = (url or "").strip()
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return url
+
 # ✅ NOVO: pega URL do banco por ENV (Railway) com fallback para alembic.ini
 def _get_database_url() -> str:
-    # Railway normalmente define DATABASE_URL (se você criar a variável no service)
+    # Railway normalmente define DATABASE_URL
     url = (os.getenv("DATABASE_URL") or "").strip()
 
     # fallback (caso você use outra variável por algum motivo)
     if not url:
         url = (os.getenv("POSTGRES_URL") or "").strip()
 
-    # fallback final: alembic.ini
-    # ⚠️ Evite usar %(DATABASE_URL)s no Windows (InterpolationMissingOptionError)
+    # fallback final: alembic.ini (mas evite %(DATABASE_URL)s no Windows)
     if not url:
         url = (config.get_main_option("sqlalchemy.url") or "").strip()
+
+    url = _normalize_database_url(url)
 
     if not url:
         raise RuntimeError(
@@ -51,43 +58,24 @@ def _get_database_url() -> str:
             "ou configure sqlalchemy.url no alembic.ini."
         )
 
-    # ✅ segurança: se alguém deixou DATABASE_URL vazio/placeholder
-    if url.lower().startswith("sqlite") and (os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID")):
-        # Se você está rodando via Railway, SQLite quase sempre é erro de configuração
-        print("⚠️ AVISO: Você está em ambiente Railway e DATABASE_URL parece SQLite. Verifique as Variáveis no Railway.")
-
     return url
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
+    """Run migrations in 'offline' mode."""
     # ✅ ATUALIZADO: usa DATABASE_URL (ENV) primeiro
     url = _get_database_url()
 
-    # ✅ NOVO: injeta no config também (compatibilidade / logs)
-    # (não quebra nada e evita confusão)
-    try:
-        config.set_main_option("sqlalchemy.url", url)
-    except Exception:
-        pass
+    # ✅ NOVO: força o alembic a usar essa URL (evita ini antigo)
+    config.set_main_option("sqlalchemy.url", url)
 
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,              # ✅ NOVO: detecta mudança de tipo
-        compare_server_default=True,    # ✅ NOVO: detecta default server-side
+        compare_type=True,              # ✅ detecta mudança de tipo
+        compare_server_default=True,    # ✅ detecta default server-side
     )
 
     with context.begin_transaction():
@@ -95,20 +83,12 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
-
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
+    """Run migrations in 'online' mode."""
     # ✅ ATUALIZADO: usa DATABASE_URL do ENV (Railway) para criar engine
     db_url = _get_database_url()
 
-    # ✅ NOVO: injeta no config também (compatibilidade / logs)
-    try:
-        config.set_main_option("sqlalchemy.url", db_url)
-    except Exception:
-        pass
+    # ✅ NOVO: força o alembic a usar essa URL (evita pegar ini antigo)
+    config.set_main_option("sqlalchemy.url", db_url)
 
     # ✅ NOVO: engine direto (melhor para Railway/Windows)
     connectable = create_engine(
@@ -130,8 +110,8 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            compare_type=True,            # ✅ NOVO
-            compare_server_default=True,  # ✅ NOVO
+            compare_type=True,
+            compare_server_default=True,
         )
 
         with context.begin_transaction():

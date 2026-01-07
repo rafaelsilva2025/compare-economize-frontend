@@ -27,7 +27,34 @@ from routes.ai import router as ai_router
 from routes.auth import router as auth_router
 from routes.auth import me_alias_router
 
-app = FastAPI(title="Compare Economize API", version="1.0.0")
+
+# ✅ NOVO: evita "Duplicate Operation ID" no Swagger/OpenAPI (Railway logs)
+# Isso acontece quando existem funções com o mesmo nome em routers diferentes
+# (ex.: update_market em business.py e markets.py).
+def custom_generate_unique_id(route) -> str:
+    try:
+        methods = ",".join(sorted([m for m in (route.methods or []) if m]))
+    except Exception:
+        methods = ""
+
+    try:
+        tag = (route.tags[0] if getattr(route, "tags", None) else "default") or "default"
+    except Exception:
+        tag = "default"
+
+    # route.name geralmente é o nome da função (ex.: update_market)
+    name = getattr(route, "name", "route") or "route"
+    path = getattr(route, "path", "") or ""
+
+    # Garante ID único por tag + método + path + nome
+    return f"{tag}-{methods}-{path}-{name}".replace(" ", "_")
+
+
+app = FastAPI(
+    title="Compare Economize API",
+    version="1.0.0",
+    generate_unique_id_function=custom_generate_unique_id,  # ✅ NOVO
+)
 
 # ✅ NOVO: middleware simples para aplicar headers de proxy no request.url (principalmente scheme)
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):
@@ -39,8 +66,19 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
         if xf_proto:
             request.scope["scheme"] = xf_proto
 
+        # ✅ Ajuste: server precisa ser (host, port). Se o host vier sem porta, usamos 443/80 conforme scheme.
         if xf_host:
-            request.scope["server"] = (xf_host, request.url.port or 443)
+            # xf_host pode vir "dominio.com" ou "dominio.com:1234"
+            if ":" in xf_host:
+                host, port = xf_host.rsplit(":", 1)
+                try:
+                    port = int(port)
+                except Exception:
+                    port = 443
+                request.scope["server"] = (host, port)
+            else:
+                default_port = 443 if (request.scope.get("scheme") == "https") else 80
+                request.scope["server"] = (xf_host, default_port)
 
         return await call_next(request)
 
@@ -95,11 +133,20 @@ def on_startup():
 
     # ✅ DEBUG: mostra qual banco está sendo usado (Railway vs SQLite)
     try:
-        # seu db.py vai usar DATABASE_URL (vamos ajustar depois), mas aqui já ajuda a ver o valor
-        print("BOOT DATABASE_URL =", os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or "sqlite (default?)")
+        print(
+            "BOOT DATABASE_URL =",
+            os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("DATABASE_PUBLIC_URL") or "sqlite (default?)"
+        )
+        print(
+            "BOOT DB DIALECT HINT =",
+            "postgres" if ("postgres" in (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or "")) else "unknown/sqlite?"
+        )
     except Exception:
         pass
 
+    # ✅ Mantido: cria tabelas no startup.
+    # ⚠️ Observação: em produção, o ideal é deixar o Alembic criar as tabelas,
+    # mas manter isso aqui não quebra (desde que engine aponte pro Postgres certo).
     Base.metadata.create_all(bind=engine)
 
 @app.get("/api/health")
